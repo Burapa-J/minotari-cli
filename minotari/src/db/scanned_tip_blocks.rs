@@ -197,6 +197,12 @@ pub fn prune_scanned_tip_blocks(conn: &Connection, account_id: i64, current_tip_
           AND height < :min_height
           AND height >= 0
           AND (height % :interval != 0)
+          AND NOT EXISTS (
+              SELECT 1 FROM burn_proofs b
+              WHERE b.account_id = scanned_tip_blocks.account_id
+                AND b.status = 'pending_merkle'
+                AND b.mined_height = scanned_tip_blocks.height
+          )
         "#,
         named_params! {
             ":account_id": account_id,

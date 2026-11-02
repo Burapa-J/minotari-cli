@@ -34,6 +34,8 @@ use std::time::Duration;
 
 use log::{debug, info, warn};
 use reqwest::Method;
+use serde::Deserialize;
+use tari_common_types::types::FixedHash;
 use tari_transaction_components::MicroMinotari;
 use tari_transaction_components::rpc::models::{
     FeePerGramStat, GetUtxosDeletedInfoRequest, GetUtxosDeletedInfoResponse, TipInfoResponse, TxQueryResponse,
@@ -96,6 +98,27 @@ pub struct WalletHttpClient {
 }
 
 impl WalletHttpClient {
+    /// Returns the canonical block hash at a height, if that height exists.
+    pub async fn get_block_hash_by_height(&self, height: u64) -> Result<Option<FixedHash>, anyhow::Error> {
+        #[derive(Deserialize)]
+        struct HeaderHash {
+            hash: Vec<u8>,
+        }
+
+        let path = format!("/get_header_by_height?height={height}");
+        match self
+            .http_client
+            .send_request_capped::<HeaderHash>(Method::GET, &path, None, 16 * 1024)
+            .await
+        {
+            Ok(header) => Ok(Some(FixedHash::try_from(header.hash)?)),
+            Err(crate::http::HttpError::ServerError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+                Ok(None)
+            },
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Creates a new wallet HTTP client with default configuration.
     ///
     /// Uses default settings of 30 second timeout and 3 retry attempts.
@@ -542,8 +565,52 @@ impl WalletHttpClient {
 mod tests {
     use super::*;
     use tari_common_types::types::PrivateKey;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn block_hash_lookup_reads_the_canonical_header_and_handles_missing_heights() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/get_header_by_height"))
+            .and(query_param("height", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "height": 100,
+                "hash": vec![7u8; 32],
+                "timestamp": 1_700_000_000,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/get_header_by_height"))
+            .and(query_param("height", "101"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let client = WalletHttpClient::new(server.uri().parse().unwrap()).unwrap();
+
+        assert_eq!(
+            client.get_block_hash_by_height(100).await.unwrap(),
+            Some(FixedHash::from([7u8; 32]))
+        );
+        assert_eq!(client.get_block_hash_by_height(101).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn block_hash_lookup_rejects_an_oversized_node_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/get_header_by_height"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(16 * 1024 + 1)))
+            .mount(&server)
+            .await;
+        let client = WalletHttpClient::new(server.uri().parse().unwrap()).unwrap();
+        let error = client
+            .get_block_hash_by_height(100)
+            .await
+            .expect_err("body must be capped");
+        assert!(error.to_string().contains("byte limit"), "{error}");
+    }
 
     #[tokio::test]
     async fn a_node_error_message_is_sanitised_before_it_is_used() {

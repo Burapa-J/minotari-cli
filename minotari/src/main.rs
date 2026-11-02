@@ -996,7 +996,8 @@ async fn scan(
         config.batch_size,
         config.confirmation_window,
     )
-    .mode(scan::ScanMode::Partial { max_blocks });
+    .mode(scan::ScanMode::Partial { max_blocks })
+    .burn_proofs_dir(config.effective_burn_proofs_dir());
 
     if let Some(name) = account_name {
         scanner = scanner.account(name);

@@ -99,4 +99,8 @@ pub enum HttpError {
     /// and server or malformed JSON in the response.
     #[error("JSON serialization error: {}", crate::log::sanitize_node_text(&.0.to_string()))]
     JsonError(#[from] serde_json::Error),
+
+    /// The node sent more bytes than this endpoint allows.
+    #[error("Node response body exceeds the {limit} byte limit")]
+    ResponseTooLarge { limit: usize },
 }

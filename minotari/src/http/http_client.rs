@@ -151,6 +151,28 @@ impl HttpClient {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<T, HttpError> {
+        self.send_request_with_limit(method, path, body, None).await
+    }
+
+    /// Sends a request while bounding the decompressed response body for a
+    /// small JSON endpoint. Other endpoints retain their existing behavior.
+    pub async fn send_request_capped<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        max_bytes: usize,
+    ) -> Result<T, HttpError> {
+        self.send_request_with_limit(method, path, body, Some(max_bytes)).await
+    }
+
+    async fn send_request_with_limit<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        max_bytes: Option<usize>,
+    ) -> Result<T, HttpError> {
         let start = Instant::now();
         let url = self.base_url.join(path)?;
 
@@ -180,16 +202,24 @@ impl HttpClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "Failed to read response body".into());
+            let body = if let Some(limit) = max_bytes {
+                String::from_utf8_lossy(&read_response_capped(resp, limit).await?).into_owned()
+            } else {
+                resp.text()
+                    .await
+                    .unwrap_or_else(|_| "Failed to read response body".into())
+            };
             // The body is the node's text; it ends up in logs and on the terminal.
             let body = crate::log::sanitize_node_text(&body);
             return Err(HttpError::ServerError { status, body });
         }
 
-        Ok(resp.json().await?)
+        if let Some(limit) = max_bytes {
+            let bytes = read_response_capped(resp, limit).await?;
+            Ok(serde_json::from_slice(&bytes)?)
+        } else {
+            Ok(resp.json().await?)
+        }
     }
 
     /// Updates the stored latency measurement.
@@ -215,6 +245,17 @@ impl HttpClient {
     pub async fn get_latency(&self) -> Option<Duration> {
         self.last_latency.read().await.map(|(d, _)| d)
     }
+}
+
+async fn read_response_capped(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, HttpError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(HttpError::ResponseTooLarge { limit });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

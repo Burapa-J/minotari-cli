@@ -28,6 +28,7 @@ pub struct ReorgInformation {
     pub invalidated_output_hashes: Vec<FixedHash>,
     pub cancelled_transaction_ids: Vec<String>,
     pub reorganized_displayed_transactions: Vec<DisplayedTransaction>,
+    pub invalidated_burn_proof_files: Vec<(String, Vec<u8>)>,
 }
 
 pub async fn handle_reorgs(
@@ -111,6 +112,10 @@ pub fn rollback_from_height(
     webhook_config: Option<WebhookTriggerConfig>,
 ) -> Result<ReorgInformation, anyhow::Error> {
     let mut generated_events: Vec<(i64, WalletEvent)> = Vec::new();
+
+    // Invalidate work that fetched a proof before this rollback, including a
+    // proof that is still pending and therefore cannot be selected by height.
+    db::advance_burn_proof_reorg_generation(tx, account_id)?;
 
     // 1. Log BlockRolledBack events
     let rolled_back_blocks = db::get_scanned_tip_blocks_by_account(tx, account_id)?
@@ -305,6 +310,10 @@ pub fn rollback_from_height(
         generated_events.push((event_id, event));
     }
 
+    // A claim proof taken from a rolled-back block points at a block no longer on the chain.
+    let invalidated_burn_proof_files = db::burn_proof_files_from_height(tx, account_id, reorg_start_height)?;
+    db::reset_burn_proofs_from_height(tx, account_id, reorg_start_height)?;
+
     let affected_count = db::reset_mined_completed_transactions_from_height(tx, account_id, reorg_start_height)?;
     if affected_count > 0 {
         info!(
@@ -326,5 +335,6 @@ pub fn rollback_from_height(
         invalidated_output_hashes,
         cancelled_transaction_ids,
         reorganized_displayed_transactions,
+        invalidated_burn_proof_files,
     })
 }

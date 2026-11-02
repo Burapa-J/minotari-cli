@@ -139,6 +139,7 @@ async fn broadcast_recorded_burn(
                 accepted_by_node: false,
                 node_reason: None,
                 local_record_lagging: true,
+                accepted_after_abandon: false,
             }
         },
     }

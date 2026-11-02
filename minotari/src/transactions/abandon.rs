@@ -494,6 +494,21 @@ mod tests {
     }
 
     #[test]
+    fn a_rebroadcast_landing_after_the_abandon_does_not_revive_the_send() {
+        let send = send_with_attempts(MAX_BROADCAST_ATTEMPTS);
+        abandon(&send, false).expect("abandon");
+
+        // The monitor's in-flight rebroadcast is accepted by the node and lands now.
+        let conn = send.pool.get().expect("conn");
+        let updated = db::mark_completed_transaction_as_broadcasted(&conn, send.tx_id, 0).expect("update");
+        drop(conn);
+
+        assert!(!updated);
+        assert_eq!(status_of(&send), CompletedTransactionStatus::Rejected);
+        assert_eq!(input_row(&send), ("UNSPENT".to_string(), None));
+    }
+
+    #[test]
     fn a_stalled_send_is_abandoned_and_its_inputs_released() {
         let send = send_with_attempts(MAX_BROADCAST_ATTEMPTS);
 

@@ -101,6 +101,10 @@ pub enum WalletEventType {
         tx_id: TxId,
         kernel_excess: Vec<u8>,
     },
+    /// A node accepted a send after the user abandoned it and its inputs were released.
+    TransactionAcceptedAfterAbandon {
+        tx_id: TxId,
+    },
     TransactionUnconfirmed {
         tx_id: TxId,
         mined_height: u64,
@@ -143,6 +147,7 @@ impl WalletEventType {
             WalletEventType::OutputRolledBack { .. } => "OutputRolledBack".to_string(),
             WalletEventType::PendingTransactionCancelled { .. } => "PendingTransactionCancelled".to_string(),
             WalletEventType::TransactionBroadcast { .. } => "TransactionBroadcast".to_string(),
+            WalletEventType::TransactionAcceptedAfterAbandon { .. } => "TransactionAcceptedAfterAbandon".to_string(),
             WalletEventType::TransactionUnconfirmed { .. } => "TransactionUnconfirmed".to_string(),
             WalletEventType::TransactionConfirmed { .. } => "TransactionConfirmed".to_string(),
             WalletEventType::TransactionRejected { .. } => "TransactionRejected".to_string(),

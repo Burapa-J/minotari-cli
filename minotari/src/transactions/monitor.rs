@@ -774,7 +774,30 @@ impl TransactionMonitor {
                 // does not count towards the stall limit.
                 let mut conn = Self::get_connection(db_pool)?;
                 let db_tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                mark_completed_transaction_as_broadcasted(&db_tx, tx.id, 0)?;
+                if !mark_completed_transaction_as_broadcasted(&db_tx, tx.id, 0)? {
+                    // The user may have abandoned the send while the node was
+                    // answering. Its inputs are released, so surface this known
+                    // double-spend risk instead of hiding it in an info log.
+                    if db::get_completed_transaction_by_id(&db_tx, tx.id)?.is_some_and(|send| {
+                        send.status == db::CompletedTransactionStatus::Rejected
+                            && send.last_rejected_reason.as_deref()
+                                == Some(crate::transactions::abandon::ABANDONED_REASON)
+                    }) {
+                        let warning = WalletEvent {
+                            id: 0,
+                            account_id,
+                            event_type: WalletEventType::TransactionAcceptedAfterAbandon { tx_id: tx.id },
+                            description: format!(
+                                "WARNING: Transaction {} was accepted after abandonment; its inputs were released. Do not spend them again until the chain is reconciled",
+                                tx.id
+                            ),
+                        };
+                        self.persist_event(&db_tx, account_id, &warning)?;
+                        db_tx.commit()?;
+                        result.wallet_events.push(warning);
+                    }
+                    return Ok(());
+                }
                 self.persist_event(&db_tx, account_id, &event)?;
                 db_tx.commit()?;
                 result.wallet_events.push(event);
@@ -806,7 +829,9 @@ impl TransactionMonitor {
                 // The count and the stall event go in together.
                 let mut conn = Self::get_connection(db_pool)?;
                 let db_tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                db::record_failed_broadcast_attempt(&db_tx, tx.id, attempts, &reason)?;
+                if !db::record_failed_broadcast_attempt(&db_tx, tx.id, attempts, &reason)? {
+                    return Ok(());
+                }
                 if let Some(event) = &stalled_event {
                     self.persist_event(&db_tx, account_id, event)?;
                 }
@@ -1413,6 +1438,87 @@ mod tests {
         );
         let stored = db::get_events_by_account_id(&conn, fixture.account_id, 10, 0).expect("events");
         assert!(stored.iter().any(|e| e.event_type == "TransactionStalled"));
+    }
+
+    #[tokio::test]
+    async fn an_accepted_rebroadcast_after_abandon_emits_a_warning_event() {
+        let fixture = send_fixture("accepted_after_abandon.db", 1);
+        let server = node_reporting("NotStored").await;
+        let pool = fixture.pool.clone();
+        let tx_id = fixture.tx_id;
+        Mock::given(method("POST"))
+            .and(path("/json_rpc"))
+            .respond_with(move |_: &wiremock::Request| {
+                let conn = pool.get().expect("conn");
+                db::mark_completed_transaction_as_rejected(
+                    &conn,
+                    tx_id,
+                    crate::transactions::abandon::ABANDONED_REASON,
+                )
+                .expect("abandon during request");
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "accepted": true, "rejection_reason": "None", "is_synced": true },
+                    "error": null,
+                    "id": "1",
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = monitor_for(&fixture)
+            .monitor_if_needed(&client(&server), &fixture.pool, fixture.account_id, 100)
+            .await
+            .expect("monitor");
+        assert_eq!(completed(&fixture).status, CompletedTransactionStatus::Rejected);
+        assert!(result.wallet_events.iter().any(|event| matches!(
+            event.event_type,
+            WalletEventType::TransactionAcceptedAfterAbandon { tx_id: warned } if warned == fixture.tx_id
+        )));
+        let conn = fixture.pool.get().expect("conn");
+        let events = db::get_events_by_account_id(&conn, fixture.account_id, 10, 0).expect("events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "TransactionAcceptedAfterAbandon")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_rebroadcast_after_abandon_does_not_stall() {
+        let fixture = send_fixture("refused_after_abandon.db", MAX_BROADCAST_ATTEMPTS - 1);
+        let server = node_reporting("NotStored").await;
+        let pool = fixture.pool.clone();
+        let tx_id = fixture.tx_id;
+        Mock::given(method("POST"))
+            .and(path("/json_rpc"))
+            .respond_with(move |_: &wiremock::Request| {
+                let conn = pool.get().expect("conn");
+                db::mark_completed_transaction_as_rejected(
+                    &conn,
+                    tx_id,
+                    crate::transactions::abandon::ABANDONED_REASON,
+                )
+                .expect("abandon during request");
+                ResponseTemplate::new(200).set_body_json(refused_with("FeeTooLow"))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = monitor_for(&fixture)
+            .monitor_if_needed(&client(&server), &fixture.pool, fixture.account_id, 100)
+            .await
+            .expect("monitor");
+        let completed = completed(&fixture);
+        assert_eq!(completed.status, CompletedTransactionStatus::Rejected);
+        assert_eq!(completed.broadcast_attempts, MAX_BROADCAST_ATTEMPTS - 1);
+        assert!(
+            !result
+                .wallet_events
+                .iter()
+                .any(|event| matches!(event.event_type, WalletEventType::TransactionStalled { .. }))
+        );
     }
 
     #[tokio::test]

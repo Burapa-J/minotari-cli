@@ -78,6 +78,7 @@ pub struct Scanner {
     required_confirmations: u64,
     /// Webhook Configuration
     webhook_config: Option<WebhookTriggerConfig>,
+    burn_proofs_dir: Option<PathBuf>,
 }
 
 impl Scanner {
@@ -123,6 +124,7 @@ impl Scanner {
             cancel_token: None,
             required_confirmations,
             webhook_config: None,
+            burn_proofs_dir: None,
         }
     }
 
@@ -259,6 +261,12 @@ impl Scanner {
         self
     }
 
+    /// Directory containing completed burn claim proof files to invalidate on rollback.
+    pub fn burn_proofs_dir(mut self, dir: PathBuf) -> Self {
+        self.burn_proofs_dir = Some(dir);
+        self
+    }
+
     async fn run_internal<E: EventSender + Clone + Send + 'static>(
         self,
         event_sender: E,
@@ -277,7 +285,8 @@ impl Scanner {
             self.processing_threads,
             self.reorg_check_interval,
             self.batch_size,
-        )?;
+        )?
+        .with_burn_proofs_dir(self.burn_proofs_dir);
 
         coordinator
             .run(
@@ -397,7 +406,8 @@ impl Scanner {
             self.processing_threads,
             self.reorg_check_interval,
             self.batch_size,
-        )?;
+        )?
+        .with_burn_proofs_dir(self.burn_proofs_dir);
 
         coordinator
             .run_backfill(

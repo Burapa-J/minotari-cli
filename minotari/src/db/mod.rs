@@ -126,8 +126,11 @@ pub use inputs::{DbInput, get_input_by_id, insert_input, soft_delete_inputs_from
 
 mod burn_proofs;
 pub use burn_proofs::{
-    DbBurnProof, NewBurnProof, get_burn_proof_by_output_hash, get_pending_burn_proofs, insert_burn_proof,
-    mark_burn_proof_complete,
+    DbBurnProof, NewBurnProof, advance_burn_proof_reorg_generation, burn_proof_files_from_height,
+    burn_proof_is_current_complete, burn_proof_scan_state, get_burn_proof_by_output_hash,
+    get_completed_burn_proof_files, get_pending_burn_proofs, insert_burn_proof, mark_burn_proof_complete,
+    mark_burn_proof_complete_if_current, remember_pending_burn_proof_height, reset_burn_proofs_from_height,
+    reset_completed_burn_proof_for_missing_file,
 };
 
 mod payref_history;

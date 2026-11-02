@@ -1,6 +1,6 @@
 use log::{debug, info, warn};
 use minotari_scanning::{HttpBlockchainScanner, scanning::BlockchainScanner};
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 use tari_common_types::{seeds::cipher_seed::BIRTHDAY_GENESIS_FROM_UNIX_EPOCH, types::PrivateKey};
 use tari_transaction_components::key_manager::KeyManager;
 use tokio_util::sync::CancellationToken;
@@ -75,6 +75,7 @@ pub struct ScanCoordinator<E: EventSender> {
     processing_threads: usize,
     reorg_check_interval: u64,
     batch_size: u64,
+    burn_proofs_dir: Option<PathBuf>,
 }
 
 impl<E: EventSender + Clone + Send + 'static> ScanCoordinator<E> {
@@ -107,7 +108,13 @@ impl<E: EventSender + Clone + Send + 'static> ScanCoordinator<E> {
             processing_threads,
             reorg_check_interval,
             batch_size,
+            burn_proofs_dir: None,
         })
+    }
+
+    pub fn with_burn_proofs_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.burn_proofs_dir = dir;
+        self
     }
 
     /// The main entry point for the multi-account scan.
@@ -725,6 +732,15 @@ impl<E: EventSender + Clone + Send + 'static> ScanCoordinator<E> {
         scanner: &mut HttpBlockchainScanner<KeyManager>,
         cancel: &Option<CancellationToken>,
     ) -> Result<Option<u64>, ScanError> {
+        if let Some(dir) = &self.burn_proofs_dir {
+            for (claim_public_key, commitment) in &info.invalidated_burn_proof_files {
+                if let Err(error) =
+                    crate::tasks::burn_proof_worker::remove_proof_file(dir, claim_public_key, commitment).await
+                {
+                    warn!(error:% = error; "Could not remove invalidated burn proof file");
+                }
+            }
+        }
         if resume_height != 0 {
             self.emit_reorg_event(account.id, info, resume_height);
             return Ok(Some(resume_height));

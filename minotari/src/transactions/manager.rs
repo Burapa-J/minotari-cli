@@ -865,7 +865,7 @@ impl TransactionSender {
         signed_transaction_result: SignedOneSidedTransactionResult,
         grpc_address: String,
     ) -> Result<FinalizedSend, anyhow::Error> {
-        let connection = self.get_connection()?;
+        let mut connection = self.get_connection()?;
         let processed_transaction = &self.processed_transactions;
         let account_id = self.account.id;
 
@@ -987,15 +987,15 @@ impl TransactionSender {
         let mut first_broadcast = record_first_broadcast(Some(&connection), completed_tx_id, response);
 
         // Build and save DisplayedTransaction for immediate UI display
-        let displayed_transaction =
+        let mut displayed_transaction =
             self.build_pending_displayed_transaction(processed_transaction, &signed_transaction, actual_fee)?;
 
-        if let Err(e) = db::insert_displayed_transaction(&connection, &displayed_transaction) {
+        if let Err(e) = persist_first_displayed_transaction(&mut connection, &mut displayed_transaction) {
             warn!(
                 target: "audit",
                 id = completed_tx_id.to_string().as_str(),
                 error:% = e;
-                "Could not save the displayed transaction for a recorded send; the scan will add it"
+                "Could not reconcile the displayed transaction for a recorded send; the scan will add it"
             );
             first_broadcast.local_record_lagging = true;
         }
@@ -1171,6 +1171,34 @@ impl TransactionSender {
     }
 }
 
+/// Saves the initial history row without reviving a send that settled while
+/// its first node request was in flight.
+fn persist_first_displayed_transaction(
+    conn: &mut Connection,
+    displayed_transaction: &mut DisplayedTransaction,
+) -> Result<(), WalletDbError> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(current) = db::get_completed_transaction_by_id(&tx, displayed_transaction.id)? {
+        if matches!(
+            current.status,
+            db::CompletedTransactionStatus::Completed | db::CompletedTransactionStatus::Broadcast
+        ) {
+            db::insert_displayed_transaction(&tx, displayed_transaction)?;
+        } else {
+            match db::get_displayed_transaction_by_id(&tx, &displayed_transaction.id.to_string())? {
+                Some(existing) => *displayed_transaction = existing,
+                None if current.status == db::CompletedTransactionStatus::Rejected => {
+                    displayed_transaction.status = TransactionDisplayStatus::Rejected;
+                    db::insert_displayed_transaction(&tx, displayed_transaction)?;
+                },
+                None => {},
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Records what the node answered to a send's first broadcast.
 ///
 /// Accepted: the send is `Broadcast`. Already mined: it is left `Completed`
@@ -1203,7 +1231,8 @@ pub fn record_first_broadcast(
                 id = completed_tx_id.to_string().as_str();
                 "Transaction accepted by network"
             );
-            // An accepted broadcast does not count towards the stall limit.
+            // An accepted broadcast does not count towards the stall limit. A send
+            // abandoned meanwhile is left as it is.
             let recorded =
                 connection.map(|conn| db::mark_completed_transaction_as_broadcasted(conn, completed_tx_id, 0));
             (FirstBroadcast::accepted(), recorded)
@@ -1214,7 +1243,7 @@ pub fn record_first_broadcast(
                 id = completed_tx_id.to_string().as_str();
                 "Transaction already mined by network"
             );
-            (FirstBroadcast::accepted(), Some(Ok(())))
+            (FirstBroadcast::accepted(), Some(Ok(true)))
         },
         Ok(submission) => {
             let reason =
@@ -1244,7 +1273,26 @@ pub fn record_first_broadcast(
     };
 
     match recorded {
-        Some(Ok(())) => {},
+        Some(Ok(true)) => {},
+        Some(Ok(false)) if first_broadcast.accepted_by_node => {
+            match connection.and_then(|conn| {
+                db::get_completed_transaction_by_id(conn, completed_tx_id)
+                    .ok()
+                    .flatten()
+            }) {
+                Some(send)
+                    if send.status == db::CompletedTransactionStatus::Rejected
+                        && send.last_rejected_reason.as_deref()
+                            == Some(crate::transactions::abandon::ABANDONED_REASON) =>
+                {
+                    warn!(target: "audit", id = completed_tx_id.to_string().as_str();
+                        "The node accepted a send after the user abandoned it");
+                    first_broadcast.accepted_after_abandon = true;
+                },
+                _ => first_broadcast.local_record_lagging = true,
+            }
+        },
+        Some(Ok(false)) => {},
         Some(Err(e)) => {
             warn!(
                 target: "audit",
@@ -1278,6 +1326,8 @@ pub struct FirstBroadcast {
     /// the send was recorded). The send itself is recorded; its status catches
     /// up through the monitor and the scan.
     pub local_record_lagging: bool,
+    /// The node accepted a send after the user abandoned it and released its inputs.
+    pub accepted_after_abandon: bool,
 }
 
 impl FirstBroadcast {
@@ -1286,6 +1336,7 @@ impl FirstBroadcast {
             accepted_by_node: true,
             node_reason: None,
             local_record_lagging: false,
+            accepted_after_abandon: false,
         }
     }
 
@@ -1294,14 +1345,16 @@ impl FirstBroadcast {
             accepted_by_node: false,
             node_reason: Some(reason),
             local_record_lagging: false,
+            accepted_after_abandon: false,
         }
     }
 
-    /// What to tell the user: [`NOT_YET_ACCEPTED_NOTE`] when the node did not
-    /// take the send, [`RECORD_LAGGING_NOTE`] when it did but the wallet could
-    /// not record everything, nothing otherwise.
+    /// What to tell the user about node rejection, local record lag, or
+    /// acceptance after the send was abandoned.
     pub fn note(&self) -> Option<String> {
-        if !self.accepted_by_node {
+        if self.accepted_after_abandon {
+            Some(ACCEPTED_AFTER_ABANDON_NOTE.to_string())
+        } else if !self.accepted_by_node {
             Some(NOT_YET_ACCEPTED_NOTE.to_string())
         } else if self.local_record_lagging {
             Some(RECORD_LAGGING_NOTE.to_string())
@@ -1347,6 +1400,11 @@ pub const RECORD_LAGGING_NOTE: &str = "The node accepted the transaction. The wa
 /// What to tell the caller when the node did not take a recorded send.
 pub const NOT_YET_ACCEPTED_NOTE: &str = "The transaction is recorded but the node has not accepted it yet. \
      It will be rebroadcast automatically. Do not send it again.";
+
+/// What to tell the caller when a node accepts a send after its inputs were released by abandonment.
+pub const ACCEPTED_AFTER_ABANDON_NOTE: &str = "WARNING: The node accepted this transaction after it was abandoned. \
+     Its inputs were released in the wallet, but the transaction may still be mined. Do not send it again or spend \
+     those inputs until the wallet scan has reconciled the chain. A send without a change output may not show as mined.";
 
 #[cfg(test)]
 mod tests {
@@ -2271,6 +2329,52 @@ mod tests {
         let (status, attempts, ..) = send_state(&send);
         assert_eq!(status, "broadcast");
         assert_eq!(attempts, 0);
+    }
+
+    #[test]
+    fn an_accepted_first_broadcast_after_abandon_warns_the_caller() {
+        let send = recorded_send();
+        let outcome = {
+            let conn = send.pool.get().expect("conn");
+            db::mark_completed_transaction_as_rejected(
+                &conn,
+                send.tx_id,
+                crate::transactions::abandon::ABANDONED_REASON,
+            )
+            .unwrap();
+            record_first_broadcast(
+                Some(&conn),
+                send.tx_id,
+                Ok(TxSubmissionResponse {
+                    accepted: true,
+                    rejection_reason: TxSubmissionRejectionReason::None,
+                    is_synced: true,
+                    details: None,
+                }),
+            )
+        };
+        assert!(outcome.accepted_by_node);
+        assert!(outcome.note().unwrap().contains("abandoned"));
+        assert_eq!(send_state(&send).0, "rejected");
+    }
+
+    #[test]
+    fn an_initial_history_write_after_abandon_stays_rejected() {
+        let send = recorded_send();
+        let mut conn = send.pool.get().expect("conn");
+        db::mark_completed_transaction_as_rejected(&conn, send.tx_id, crate::transactions::abandon::ABANDONED_REASON)
+            .unwrap();
+        let mut displayed = pending_displayed(send.tx_id);
+        persist_first_displayed_transaction(&mut conn, &mut displayed).unwrap();
+
+        assert_eq!(displayed.status, TransactionDisplayStatus::Rejected);
+        assert_eq!(
+            db::get_displayed_transaction_by_id(&conn, &send.tx_id.to_string())
+                .unwrap()
+                .unwrap()
+                .status,
+            TransactionDisplayStatus::Rejected
+        );
     }
 
     fn pending_displayed(tx_id: TxId) -> DisplayedTransaction {
