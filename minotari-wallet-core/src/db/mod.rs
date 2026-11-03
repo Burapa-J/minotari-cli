@@ -59,10 +59,12 @@ mod error;
 pub use error::{WalletDbError, WalletDbResult};
 
 mod accounts;
+#[cfg(test)]
+pub(crate) use accounts::WALLET_PARSES;
 pub use accounts::{
-    AccountBalance, AccountRow, change_passphrase, create_account, delete_account, get_account_by_name, get_accounts,
-    get_balance, update_account_name,
+    AccountBalance, AccountRow, change_passphrase, create_account, get_account_by_name, get_accounts, get_balance,
 };
+pub(crate) use accounts::{delete_account, update_account_name};
 
 mod scanned_tip_blocks;
 pub use scanned_tip_blocks::{

@@ -46,7 +46,17 @@ pub enum SigningError {
 /// The nonce is random, so signing the same message twice gives different (both valid)
 /// signatures.
 pub fn sign_message(account: &AccountRow, password: &str, message: &str) -> Result<String, SigningError> {
-    let wallet = account.decrypt_wallet_type(password)?;
+    sign_with_wallet(account.decrypt_wallet_type(password)?, message)
+}
+
+/// Signs `message` with the keys of the account's unlocked session (see [`crate::session::unlock`]).
+///
+/// Returns [`WalletDbError::NotUnlocked`] when the account is not unlocked.
+pub fn sign_message_unlocked(account: &AccountRow, message: &str) -> Result<String, SigningError> {
+    sign_with_wallet(account.unlocked_wallet_type()?, message)
+}
+
+fn sign_with_wallet(wallet: WalletType, message: &str) -> Result<String, SigningError> {
     if matches!(wallet, WalletType::ViewWallet(_)) {
         return Err(SigningError::ViewOnlyWallet);
     }

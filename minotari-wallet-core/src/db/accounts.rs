@@ -16,6 +16,7 @@ use tari_transaction_components::key_manager::{KeyManager, wallet_types::WalletT
 use crate::db::error::{WalletDbError, WalletDbResult};
 use crate::db::outputs::get_output_totals_for_account;
 use crate::db::scanned_tip_blocks::get_latest_scanned_tip_block_by_account;
+use crate::session;
 use crate::utils::{
     crypto::{decrypt_data, encrypt_data},
     fingerprint::calculate_fingerprint,
@@ -172,20 +173,80 @@ pub struct AccountRow {
     pub birthday: i64,
 }
 
+// Counts wallet JSON parses on the current thread. Parsing a seed wallet decodes its cipher seed,
+// which runs Argon2, so tests use this to check the session skips it.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WALLET_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl AccountRow {
+    /// Loads the account's wallet keys.
+    ///
+    /// When the account is unlocked (see [`crate::session::unlock`]) the session's keys are used
+    /// and `password` is ignored, so no Argon2 key derivation runs. This does not authenticate
+    /// while a session exists; use [`AccountRow::verify_passphrase`] to check a passphrase.
     pub fn decrypt_wallet_type(&self, password: &str) -> WalletDbResult<WalletType> {
+        if let Some(wallet) = session::unlocked_wallet_type(self) {
+            return Ok(wallet);
+        }
+        self.decrypt_wallet_type_with_passphrase(password)
+    }
+
+    /// Loads the account's wallet keys with `password`, ignoring any session.
+    ///
+    /// Use this where the passphrase is an authorization check (secret export, destructive
+    /// operations), so an unlocked session cannot stand in for it.
+    pub fn decrypt_wallet_type_with_passphrase(&self, password: &str) -> WalletDbResult<WalletType> {
+        let wallet_json = self.decrypt_wallet_json(password)?;
+        self.parse_wallet_json(&wallet_json)
+    }
+
+    /// Checks `password` against the stored wallet, ignoring any session.
+    pub fn verify_passphrase(&self, password: &str) -> WalletDbResult<()> {
+        self.decrypt_wallet_type_with_passphrase(password).map(|_| ())
+    }
+
+    /// Loads the account's wallet keys from its unlocked session, without a passphrase.
+    ///
+    /// Returns [`WalletDbError::NotUnlocked`] when the account is not unlocked.
+    pub(crate) fn unlocked_wallet_type(&self) -> WalletDbResult<WalletType> {
+        session::unlocked_wallet_type(self).ok_or_else(|| WalletDbError::NotUnlocked(self.friendly_name.clone()))
+    }
+
+    /// Decrypts the stored wallet JSON with `password`, always running Argon2.
+    pub(crate) fn decrypt_wallet_json(&self, password: &str) -> WalletDbResult<Zeroizing<Vec<u8>>> {
+        // Malformed rows fail here, so `DecryptionFailed` below means a wrong password or tampering.
+        if self.cipher_nonce.len() != 24 || self.salt.len() < argon2::MIN_SALT_LEN {
+            warn!(account = &*self.friendly_name; "DB: Stored wallet nonce or salt is malformed");
+            return Err(WalletDbError::Decoding(
+                "Stored wallet nonce or salt is malformed".to_string(),
+            ));
+        }
         let encrypted_data = FullEncryptedData {
             ciphertext: &self.encrypted_wallet,
             nonce: &self.cipher_nonce,
             salt_bytes: &self.salt,
         };
-        let plaintext_bytes = decrypt_data(&encrypted_data, password).map_err(|e| {
+        decrypt_data(&encrypted_data, password).map_err(|e| {
             warn!(error:? = e; "DB: Failed to decrypt wallet");
             WalletDbError::DecryptionFailed("Failed to decrypt wallet data".to_string())
-        })?;
+        })
+    }
 
-        let wallet: WalletType = serde_json::from_slice(&plaintext_bytes)
-            .map_err(|e| WalletDbError::Decoding(format!("Failed to deserialize wallet JSON: {}", e)))?;
+    /// Parses decrypted wallet JSON and checks it belongs to this row.
+    pub(crate) fn parse_wallet_json(&self, wallet_json: &[u8]) -> WalletDbResult<WalletType> {
+        #[cfg(test)]
+        WALLET_PARSES.with(|count| count.set(count.get() + 1));
+        // serde_json's message can quote the decrypted input, so report only where and what kind.
+        let wallet: WalletType = serde_json::from_slice(wallet_json).map_err(|e| {
+            WalletDbError::Decoding(format!(
+                "Failed to deserialize wallet JSON: {:?} error at line {} column {}",
+                e.classify(),
+                e.line(),
+                e.column()
+            ))
+        })?;
 
         // The fingerprint column is the only record of *which* wallet this row is
         // supposed to hold. AEAD tells us the ciphertext was not tampered with under
@@ -266,6 +327,7 @@ impl AccountRow {
         Ok(address)
     }
 
+    /// Uses the session when one exists, without checking `password`; see [`Self::decrypt_wallet_type`].
     pub fn get_key_manager(&self, password: &str) -> WalletDbResult<KeyManager> {
         let wallet = self.decrypt_wallet_type(password)?;
         let key_manager = KeyManager::new(wallet)
@@ -275,7 +337,7 @@ impl AccountRow {
     }
 
     pub fn get_seed_words(&self, password: &str) -> WalletDbResult<Option<SeedWords>> {
-        let wallet = self.decrypt_wallet_type(password)?;
+        let wallet = self.decrypt_wallet_type_with_passphrase(password)?;
 
         match wallet {
             WalletType::SeedWords(seed_wallet) => {
@@ -296,7 +358,7 @@ impl AccountRow {
     /// handed back in a buffer that wipes itself rather than as a plain `String` left
     /// in the heap after printing.
     pub fn get_keys_hex(&self, password: &str) -> WalletDbResult<(Zeroizing<String>, String)> {
-        let wallet = self.decrypt_wallet_type(password)?;
+        let wallet = self.decrypt_wallet_type_with_passphrase(password)?;
 
         let view_key = wallet.get_view_key();
         let spend_key = wallet.get_public_spend_key();
@@ -406,7 +468,9 @@ fn get_balance_in_snapshot(conn: &Connection, account_id: i64) -> WalletDbResult
     })
 }
 
-pub fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
+/// Deletes the account row and its data. Does not touch its key session; use
+/// [`crate::utils::delete_wallet::delete_wallet`], which also locks it.
+pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
     info!(
         target: "audit",
         account = friendly_name;
@@ -468,7 +532,9 @@ pub fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<
     Ok(())
 }
 
-pub fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
+/// Renames the account row. Does not touch its key session; use
+/// [`crate::utils::rename_wallet::rename_wallet`], which also locks it.
+pub(crate) fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
     info!(
         target: "audit",
         current_name = current_name,
@@ -536,11 +602,22 @@ pub fn change_passphrase(
 
     // `secure_delete` is turned on for the rewrite only; put the connection back as it was.
     let previous_secure_delete: i64 = conn.pragma_query_value(None, "secure_delete", |row| row.get(0))?;
+
+    // No other session change can run until this one is done. Once committed, the old session no
+    // longer matches the row; if this account was unlocked, it is unlocked again from the
+    // re-encrypted wallet, with nothing left that can fail after the commit.
+    let mut session_changes = session::changes_guard();
+    session_changes.record_lock(account_name);
     let result = rewrite_encrypted_wallet(conn, account_name, old_password, new_password);
     if let Err(e) = conn.pragma_update(None, "secure_delete", previous_secure_delete) {
         warn!(error:% = e; "DB: Failed to restore secure_delete after passphrase change");
     }
-    result
+    let (previous_row, updated_row, wallet) = result?;
+    if session::has_session(&previous_row) {
+        session::store(&updated_row, wallet);
+        info!(target: "audit", account = account_name; "Key session unlocked under the new passphrase");
+    }
+    Ok(())
 }
 
 fn rewrite_encrypted_wallet(
@@ -548,14 +625,15 @@ fn rewrite_encrypted_wallet(
     account_name: &str,
     old_password: &str,
     new_password: &str,
-) -> WalletDbResult<()> {
+) -> WalletDbResult<(AccountRow, AccountRow, WalletType)> {
     // The encrypted wallet is the only field `encrypt_data` writes. Read and rewrite it under
     // the write lock so a concurrent change cannot be lost.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let account = get_account_by_name(&tx, account_name)?
         .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", account_name)))?;
-    let wallet = account.decrypt_wallet_type(old_password)?;
+    // Always check the old passphrase, even when the account is unlocked.
+    let wallet = account.decrypt_wallet_type_with_passphrase(old_password)?;
     // Sized well above any wallet's JSON so the buffer never reallocates and leaves a copy behind.
     let mut wallet_json = Zeroizing::new(Vec::with_capacity(16 * 1024));
     serde_json::to_writer(&mut *wallet_json, &wallet)
@@ -590,7 +668,16 @@ fn rewrite_encrypted_wallet(
         Err(e) => warn!(error:% = e; "DB: WAL checkpoint after passphrase change failed"),
     }
 
-    Ok(())
+    let updated = AccountRow {
+        id: account.id,
+        friendly_name: account.friendly_name.clone(),
+        fingerprint: account.fingerprint.clone(),
+        encrypted_wallet: encrypted_data.ciphertext,
+        cipher_nonce: encrypted_data.nonce,
+        salt: encrypted_data.salt_bytes,
+        birthday: account.birthday,
+    };
+    Ok((account, updated, wallet))
 }
 
 #[cfg(test)]

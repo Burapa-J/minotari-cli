@@ -9,6 +9,12 @@ use tari_common_types::types::{CompressedPublicKey, PrivateKey};
 use tari_utilities::byte_array::ByteArray;
 use zeroize::{Zeroize, Zeroizing};
 
+// Counts Argon2 runs on the current thread, so tests can check the key session avoids them.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static KEY_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Derives the wallet encryption key from `password`.
 ///
 /// The intermediate buffer is wiped before returning: it holds the same key as the
@@ -16,6 +22,8 @@ use zeroize::{Zeroize, Zeroizing};
 /// be left on the stack for whatever runs there next — or written out to a core dump
 /// or swap file.
 fn derive_key(password: &str, salt: &[u8]) -> Result<Key, anyhow::Error> {
+    #[cfg(test)]
+    KEY_DERIVATIONS.with(|count| count.set(count.get() + 1));
     let params = Params::default();
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key_bytes = [0u8; 32];
