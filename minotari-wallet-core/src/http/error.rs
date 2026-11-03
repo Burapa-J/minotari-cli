@@ -49,14 +49,14 @@ pub enum HttpError {
     /// - TLS/SSL handshake errors
     // The underlying errors can quote what the node sent (a response body, a
     // fragment of malformed JSON), so their text is sanitised when shown.
-    #[error("Request failed: {}", crate::log::sanitize_node_text(&.0.to_string()))]
+    #[error("Request failed: {}", without_url(&.0.to_string()))]
     RequestFailed(#[from] reqwest::Error),
 
     /// An error occurred in the HTTP middleware layer.
     ///
     /// The middleware handles retry logic and other cross-cutting concerns.
     /// This error may indicate that all retry attempts have been exhausted.
-    #[error("Middleware error: {}", crate::log::sanitize_node_text(&.0.to_string()))]
+    #[error("Middleware error: {}", without_url(&.0.to_string()))]
     MiddlewareError(#[from] reqwest_middleware::Error),
 
     /// The server returned a non-success HTTP status code.
@@ -103,4 +103,28 @@ pub enum HttpError {
     /// The node sent more bytes than this endpoint allows.
     #[error("Node response body exceeds the {limit} byte limit")]
     ResponseTooLarge { limit: usize },
+}
+
+/// Sanitised error text without the ` for url (...)` reqwest adds: request
+/// query strings carry kernel signatures and commitments.
+fn without_url(text: &str) -> String {
+    let mut text = text.to_string();
+    while let Some(start) = text.find(" for url (") {
+        let end = text[start..]
+            .find(')')
+            .map_or(text.len(), |close| start.saturating_add(close).saturating_add(1));
+        text.replace_range(start..end, "");
+    }
+    crate::log::sanitize_node_text(&text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_text_loses_the_request_url() {
+        let text = "error sending request for url (http://node/transactions?excess_sig_sig=abcd): timed out";
+        assert_eq!(without_url(text), "error sending request: timed out");
+    }
 }

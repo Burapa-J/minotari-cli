@@ -636,7 +636,6 @@ impl TransactionSender {
         let total_amount = total_recipient_amount(&recipients, self.network)?;
         info!(
             target: "audit",
-            idempotency_key = idempotency_key.as_str(),
             recipient_count = recipients.len(),
             amount = &*mask_amount(total_amount);
             "Starting new transaction"
@@ -681,7 +680,6 @@ impl TransactionSender {
     ) -> Result<PrepareOneSidedTransactionForSigningResult, anyhow::Error> {
         info!(
             target: "audit",
-            idempotency_key = idempotency_key.as_str();
             "Starting new send-all transaction"
         );
         // The amount is filled in once the inputs are known.

@@ -305,7 +305,6 @@ fn resolve_replay(conn: &Connection, binding: &IdempotencyBinding, account_id: i
 
     info!(
         target: "audit",
-        idempotency_key = key,
         operation = binding.operation().as_str();
         "Found existing pending transaction lock"
     );

@@ -1889,10 +1889,12 @@ mod tests {
                             "metadata": {
                                 "best_block_height": self.tip,
                                 "best_block_hash": self.hash(self.tip),
-                                "accumulated_difficulty": "0",
+                                "accumulated_difficulty": "0x0",
+                                "pruning_horizon": 0,
                                 "pruned_height": 0,
                                 "timestamp": 0,
-                            }
+                            },
+                            "is_synced": true,
                         }))
                         .set_delay(delay)
                 },
@@ -2177,6 +2179,162 @@ mod tests {
             ProcessingEvent::ScanStatus(ScanStatusEvent::Completed { final_height: 1600, .. })
         )));
         assert_eq!(terminal_count(&events), 1);
+    }
+
+    fn is_phase_completed(event: &ProcessingEvent) -> bool {
+        matches!(
+            event,
+            ProcessingEvent::ScanStatus(ScanStatusEvent::FastSyncPhaseCompleted { .. })
+        )
+    }
+
+    fn budget_exhausted_tip(events: &[ProcessingEvent]) -> Option<u64> {
+        events.iter().find_map(|e| match e {
+            ProcessingEvent::ScanStatus(ScanStatusEvent::BudgetExhausted { tip_height, .. }) => Some(*tip_height),
+            _ => None,
+        })
+    }
+
+    const FAST_SYNC: ScanMode = ScanMode::FastSync { safety_buffer: 20 };
+    const BACKFILL_TO: u64 = 1520;
+
+    /// Runs `scan` and cancels it once the (slow) block download has been asked for.
+    async fn cancel_during_download(
+        setup: &Setup,
+        token: &CancellationToken,
+        scan: impl Future<Output = Result<(Vec<WalletEvent>, bool), ScanError>>,
+    ) -> bool {
+        let cancel = cancel_once_requested(&setup.server, "/sync_utxos_by_block", 0, token);
+        let (result, _) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(scan, cancel) })
+            .await
+            .expect("the scan stops when cancelled");
+        let (_, more_blocks) = result.expect("a cancelled scan is not an error");
+        more_blocks
+    }
+
+    fn slow_download_chain() -> MockChain {
+        let mut chain = MockChain::new(1600);
+        chain.download_delay = Duration::from_millis(500);
+        chain
+    }
+
+    #[tokio::test]
+    async fn a_fast_sync_completes_once_after_both_phases() {
+        let mut setup = setup(1500, 1600).await;
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(vec![account(&setup.pool)], "password", FAST_SYNC, 0, None)
+            .await
+            .expect("scan");
+        assert!(!more_blocks);
+        let events = drain(&mut setup.events);
+
+        assert_eq!(terminal_count(&events), 1);
+        let completed = position(&events, |e| {
+            matches!(
+                e,
+                ProcessingEvent::ScanStatus(ScanStatusEvent::Completed { final_height: 1600, .. })
+            )
+        })
+        .expect("completed");
+        assert_eq!(events.iter().filter(|e| is_phase_completed(e)).count(), 2);
+        let last_phase = events.iter().rposition(is_phase_completed).expect("phase completed");
+        assert!(last_phase < completed, "Completed comes after the phases");
+    }
+
+    #[tokio::test]
+    async fn a_fast_sync_past_its_deadline_ends_out_of_budget() {
+        let mut setup = setup(1500, 1600).await;
+        setup.coordinator.deadline = Some(Instant::now());
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(vec![account(&setup.pool)], "password", FAST_SYNC, 0, None)
+            .await
+            .expect("scan");
+        assert!(more_blocks);
+        let events = drain(&mut setup.events);
+        assert_eq!(terminal_count(&events), 1);
+        assert_eq!(budget_exhausted_tip(&events), Some(1600));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_fast_sync_reports_cancelled_once() {
+        let mut setup = setup_chain(1500, slow_download_chain(), 1_000).await;
+        let token = CancellationToken::new();
+
+        let scan = setup.coordinator.run(
+            vec![account(&setup.pool)],
+            "password",
+            FAST_SYNC,
+            0,
+            Some(token.clone()),
+        );
+        assert!(cancel_during_download(&setup, &token, scan).await);
+        let events = drain(&mut setup.events);
+        assert_eq!(terminal_count(&events), 1);
+        assert!(events.iter().any(is_cancelled));
+    }
+
+    #[tokio::test]
+    async fn a_backfill_completes_once_after_its_phase() {
+        let mut setup = setup(1500, 1600).await;
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run_backfill(vec![account(&setup.pool)], "password", BACKFILL_TO, 0, None)
+            .await
+            .expect("backfill");
+        assert!(!more_blocks);
+        let events = drain(&mut setup.events);
+
+        assert_eq!(terminal_count(&events), 1);
+        // The mock chain serves whole pages, so the scan can end past BACKFILL_TO.
+        let completed = position(&events, |e| {
+            matches!(
+                e,
+                ProcessingEvent::ScanStatus(ScanStatusEvent::Completed { final_height, .. }) if *final_height >= BACKFILL_TO
+            )
+        })
+        .expect("completed");
+        let phase = position(&events, is_phase_completed).expect("phase completed");
+        assert!(phase < completed, "Completed comes after the phase");
+    }
+
+    #[tokio::test]
+    async fn a_backfill_past_its_deadline_ends_out_of_budget() {
+        let mut setup = setup(1500, 1600).await;
+        setup.coordinator.deadline = Some(Instant::now());
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run_backfill(vec![account(&setup.pool)], "password", BACKFILL_TO, 0, None)
+            .await
+            .expect("backfill");
+        assert!(more_blocks);
+        let events = drain(&mut setup.events);
+        assert_eq!(terminal_count(&events), 1);
+        assert_eq!(budget_exhausted_tip(&events), Some(BACKFILL_TO));
+        assert!(!events.iter().any(is_phase_completed));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_backfill_reports_cancelled_once() {
+        let mut setup = setup_chain(1500, slow_download_chain(), 1_000).await;
+        let token = CancellationToken::new();
+
+        let scan = setup.coordinator.run_backfill(
+            vec![account(&setup.pool)],
+            "password",
+            BACKFILL_TO,
+            0,
+            Some(token.clone()),
+        );
+        assert!(cancel_during_download(&setup, &token, scan).await);
+        let events = drain(&mut setup.events);
+        assert_eq!(terminal_count(&events), 1);
+        assert!(events.iter().any(is_cancelled));
     }
 
     #[tokio::test]

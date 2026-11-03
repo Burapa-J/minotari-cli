@@ -51,7 +51,6 @@ pub fn create_pending_transaction(
     info!(
         target: "audit",
         account_id = account_id,
-        idempotency_key = idempotency_key,
         operation = binding.operation().as_str(),
         total_value = &*mask_amount(total_value);
         "DB: Creating pending transaction"
@@ -119,10 +118,7 @@ pub fn create_pending_transaction(
             if let rusqlite::Error::SqliteFailure(err, _) = &e
                 && err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
             {
-                warn!(
-                    idempotency_key = idempotency_key;
-                    "DB: Duplicate pending transaction attempted"
-                );
+                warn!("DB: Duplicate pending transaction attempted");
                 return Err(WalletDbError::DuplicateEntry(format!(
                     "Pending transaction with idempotency key '{}' already exists",
                     idempotency_key
@@ -207,7 +203,6 @@ pub fn update_pending_transaction_status_if(
     status: PendingTransactionStatus,
 ) -> WalletDbResult<bool> {
     debug!(
-        id = id,
         expected:% = expected,
         status:% = status;
         "DB: Updating pending transaction status if unchanged"
@@ -270,7 +265,6 @@ pub fn update_pending_transaction_status(
     status: PendingTransactionStatus,
 ) -> WalletDbResult<()> {
     debug!(
-        id = id,
         status:% = status;
         "DB: Updating pending transaction status"
     );
