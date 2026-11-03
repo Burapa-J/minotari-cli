@@ -482,12 +482,11 @@ impl Scanner {
 /// error, so a scan never ends without a terminal event for the account asked for.
 fn accounts_to_scan(conn: &rusqlite::Connection, name: Option<&str>) -> Result<Vec<db::AccountRow>, ScanError> {
     let accounts = db::get_accounts(conn, name)?;
-    if let Some(name) = name
-        && accounts.is_empty()
-    {
-        return Err(ScanError::DbError(db::WalletDbError::InvalidInput(format!(
-            "Account '{name}' not found"
-        ))));
+    if name.is_some() && accounts.is_empty() {
+        // The name stays out of the error: scan errors are logged.
+        return Err(ScanError::DbError(db::WalletDbError::InvalidInput(
+            "The account to scan was not found".to_string(),
+        )));
     }
     Ok(accounts)
 }

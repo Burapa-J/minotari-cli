@@ -159,8 +159,7 @@ pub fn claim_pending_transaction_for_broadcast(
             |row| row.get(0),
         )
         .optional()?;
-    let status =
-        status.ok_or_else(|| WalletDbError::InvalidInput(format!("No pending transaction with id '{}'", id)))?;
+    let status = status.ok_or_else(|| WalletDbError::InvalidInput("No such pending transaction".to_string()))?;
 
     Ok(Some(
         PendingTransactionStatus::from_str(&status).map_err(WalletDbError::Decoding)?,

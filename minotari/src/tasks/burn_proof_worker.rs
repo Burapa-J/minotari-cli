@@ -14,7 +14,7 @@
 
 use std::{io::ErrorKind, path::PathBuf, time::Duration};
 
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use reqwest::StatusCode;
 use tari_common::configuration::Network;
 use tari_common_types::types::{CompressedPublicKey, FixedHash, PrivateKey};
@@ -316,7 +316,9 @@ impl BurnProofWorker {
             }
             return Ok(());
         }
-        info!(target: LOG_TARGET, path = &*final_path.display().to_string(); "Wrote complete burn proof file");
+        info!(target: LOG_TARGET, burn_proof_id = proof.id; "Wrote complete burn proof file");
+        // The file name is the claim public key and the commitment.
+        trace!(target: LOG_TARGET, path = &*final_path.display().to_string(); "Burn proof file path");
 
         Ok(())
     }

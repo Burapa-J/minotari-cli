@@ -276,10 +276,9 @@ impl AccountRow {
                 target: "audit",
                 "DB: Wallet fingerprint mismatch — stored key material does not belong to this account"
             );
-            return Err(WalletDbError::DecryptionFailed(format!(
-                "Wallet fingerprint mismatch for account '{}': the stored key material does not belong to this account",
-                self.friendly_name
-            )));
+            return Err(WalletDbError::DecryptionFailed(
+                "Wallet fingerprint mismatch: the stored key material does not belong to this account".to_string(),
+            ));
         }
 
         Ok(())
