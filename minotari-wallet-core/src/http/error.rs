@@ -49,14 +49,14 @@ pub enum HttpError {
     /// - TLS/SSL handshake errors
     // The underlying errors can quote what the node sent (a response body, a
     // fragment of malformed JSON), so their text is sanitised when shown.
-    #[error("Request failed: {}", without_url(&.0.to_string()))]
+    #[error("Request failed: {}", error_text(.0))]
     RequestFailed(reqwest::Error),
 
     /// An error occurred in the HTTP middleware layer.
     ///
     /// The middleware handles retry logic and other cross-cutting concerns.
     /// This error may indicate that all retry attempts have been exhausted.
-    #[error("Middleware error: {}", without_url(&.0.to_string()))]
+    #[error("Middleware error: {}", error_text(.0))]
     MiddlewareError(reqwest_middleware::Error),
 
     /// The server returned a non-success HTTP status code.
@@ -124,6 +124,20 @@ impl From<reqwest_middleware::Error> for HttpError {
     }
 }
 
+/// The error and its causes (connection refused, timeout, ...) as one sanitised
+/// line without URLs. The causes are shown here because the error is not
+/// exposed as a `source()`.
+fn error_text(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        text.push_str(": ");
+        text.push_str(&error.to_string());
+        cause = error.source();
+    }
+    without_url(&text)
+}
+
 /// Sanitised error text without the ` for url (...)` reqwest adds: request
 /// query strings carry kernel signatures and commitments.
 fn without_url(text: &str) -> String {
@@ -140,6 +154,23 @@ fn without_url(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_failed_request_shows_its_cause_but_not_its_url() {
+        let error = reqwest::get("http://127.0.0.1:1/transactions?excess_sig_sig=abcd")
+            .await
+            .expect_err("nothing listens on port 1");
+        let text = HttpError::from(error).to_string();
+        assert!(
+            text.starts_with("Request failed: error sending request: "),
+            "got: {text}"
+        );
+        assert!(
+            text.len() > "Request failed: error sending request: ".len(),
+            "the cause is shown: {text}"
+        );
+        assert!(!text.contains("abcd") && !text.contains("127.0.0.1"), "got: {text}");
+    }
 
     #[test]
     fn error_text_loses_the_request_url() {

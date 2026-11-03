@@ -350,10 +350,14 @@ fn is_pruned_block_error(err: &anyhow::Error) -> bool {
 fn check_output_proof(expected_output_hash: &FixedHash, output_proof: &BurnOutputProof) -> Result<(), anyhow::Error> {
     let proof_output_hash = output_proof.output.hash()?;
     if proof_output_hash != *expected_output_hash {
+        trace!(
+            target: LOG_TARGET,
+            proof_output_hash:% = proof_output_hash,
+            expected_output_hash:% = expected_output_hash;
+            "Burn output proof is for a different output"
+        );
         return Err(anyhow::anyhow!(
-            "Base node returned a burn output proof for output {} instead of {}",
-            proof_output_hash,
-            expected_output_hash
+            "Base node returned a burn output proof for a different output"
         ));
     }
     Ok(())
@@ -531,7 +535,10 @@ mod tests {
         let output_proof = make_test_output_proof();
 
         let err = check_output_proof(&FixedHash::from([1u8; 32]), &output_proof).unwrap_err();
-        assert!(err.to_string().contains("instead of"), "Unexpected error: {err}");
+        assert_eq!(
+            err.to_string(),
+            "Base node returned a burn output proof for a different output"
+        );
     }
 
     #[test]
