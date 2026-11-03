@@ -184,7 +184,8 @@ impl AccountRow {
     /// Loads the account's wallet keys.
     ///
     /// When the account is unlocked (see [`crate::session::unlock`]) the session's keys are used
-    /// and `password` is ignored, so no Argon2 key derivation runs.
+    /// and `password` is ignored, so no Argon2 key derivation runs. This does not authenticate
+    /// while a session exists; use [`AccountRow::verify_passphrase`] to check a passphrase.
     pub fn decrypt_wallet_type(&self, password: &str) -> WalletDbResult<WalletType> {
         if let Some(wallet) = session::unlocked_wallet_type(self) {
             return Ok(wallet);
@@ -201,10 +202,15 @@ impl AccountRow {
         self.parse_wallet_json(&wallet_json)
     }
 
+    /// Checks `password` against the stored wallet, ignoring any session.
+    pub fn verify_passphrase(&self, password: &str) -> WalletDbResult<()> {
+        self.decrypt_wallet_type_with_passphrase(password).map(|_| ())
+    }
+
     /// Loads the account's wallet keys from its unlocked session, without a passphrase.
     ///
     /// Returns [`WalletDbError::NotUnlocked`] when the account is not unlocked.
-    pub fn unlocked_wallet_type(&self) -> WalletDbResult<WalletType> {
+    pub(crate) fn unlocked_wallet_type(&self) -> WalletDbResult<WalletType> {
         session::unlocked_wallet_type(self).ok_or_else(|| WalletDbError::NotUnlocked(self.friendly_name.clone()))
     }
 
@@ -307,6 +313,7 @@ impl AccountRow {
         Ok(address)
     }
 
+    /// Uses the session when one exists, without checking `password`; see [`Self::decrypt_wallet_type`].
     pub fn get_key_manager(&self, password: &str) -> WalletDbResult<KeyManager> {
         let wallet = self.decrypt_wallet_type(password)?;
         let key_manager = KeyManager::new(wallet)
@@ -449,7 +456,7 @@ fn get_balance_in_snapshot(conn: &Connection, account_id: i64) -> WalletDbResult
 
 /// Deletes the account row and its data. Does not touch its key session; use
 /// [`crate::utils::delete_wallet::delete_wallet`], which also locks it.
-pub fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
+pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
     info!(
         target: "audit",
         account = friendly_name;
@@ -513,7 +520,7 @@ pub fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<
 
 /// Renames the account row. Does not touch its key session; use
 /// [`crate::utils::rename_wallet::rename_wallet`], which also locks it.
-pub fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
+pub(crate) fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
     info!(
         target: "audit",
         current_name = current_name,

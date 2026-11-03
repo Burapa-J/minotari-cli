@@ -2,17 +2,21 @@
 //!
 //! [`unlock`] decrypts and parses the account's wallet once and keeps it in memory that wipes
 //! itself, so later address, scan, send and signing calls for that account need neither the
-//! passphrase nor any Argon2 work. [`lock`] drops the session and wipes the keys.
+//! passphrase nor any Argon2 work. [`lock`] stops new operations from using the session and drops
+//! the cached keys.
 //!
 //! Sessions are keyed by account name and tied to the ciphertext they were decrypted from, so a
 //! session never applies to a different row (another database, or a re-encrypted wallet).
 //!
-//! This module has no logging, and [`UnlockedAccount`] is not `Debug`, `Clone` or `Serialize`, so
-//! no key material can be formatted into a log line.
+//! Sessions have no expiry: the host decides their lifetime and must lock on close or background.
+//!
+//! The only logging here is audit lines carrying the account name. [`UnlockedAccount`] is not
+//! `Debug`, `Clone` or `Serialize`, so no key material can be formatted into a log line.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock};
 
+use log::info;
 use rusqlite::Connection;
 use tari_transaction_components::key_manager::wallet_types::WalletType;
 
@@ -27,17 +31,34 @@ pub struct UnlockedAccount {
 static SESSIONS: LazyLock<RwLock<HashMap<String, Arc<UnlockedAccount>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-// Held by every operation that adds or removes sessions, for its whole duration, so a lock
-// cannot land in the middle of an unlock or a passphrase change and then be undone by it.
-// Key paths only read `SESSIONS` and never wait on it.
-static CHANGES: Mutex<()> = Mutex::new(());
+// Held by every change to the session map. `unlock` takes it only to store, after its Argon2
+// work; passphrase changes, deletes and renames hold it throughout. Key paths never wait on it.
+static CHANGES: LazyLock<Mutex<LockCounts>> = LazyLock::new(|| Mutex::new(LockCounts::default()));
+
+/// How many times each account, and all accounts, have been locked, so an unlock that was in
+/// flight during a lock does not store.
+#[derive(Default)]
+pub(crate) struct LockCounts {
+    all: u64,
+    by_name: HashMap<String, u64>,
+}
+
+impl LockCounts {
+    fn for_name(&self, account_name: &str) -> (u64, u64) {
+        (self.all, self.by_name.get(account_name).copied().unwrap_or(0))
+    }
+}
 
 /// Unlocks `account_name` with `passphrase`, running Argon2 once.
 ///
-/// Returns [`WalletDbError::InvalidPassphrase`] on a wrong passphrase and stores nothing. Does
-/// nothing if the account is already unlocked.
+/// This does not authenticate: it returns `Ok` without checking `passphrase` when the account is
+/// already unlocked. Use [`AccountRow::verify_passphrase`] to check a passphrase.
+///
+/// Returns [`WalletDbError::InvalidPassphrase`] on a wrong passphrase and stores nothing. Returns
+/// [`WalletDbError::NotUnlocked`] and stores nothing if a lock or a change to the account ran
+/// while it was unlocking.
 pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> WalletDbResult<()> {
-    let _changes = changes_guard();
+    let locks_before = changes_guard().for_name(account_name);
     let account = get_account_by_name(conn, account_name)?
         .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", account_name)))?;
     if session_for(&account).is_some() {
@@ -46,26 +67,49 @@ pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> Wallet
 
     let wallet_json = match account.decrypt_wallet_json(passphrase) {
         Ok(wallet_json) => wallet_json,
-        Err(WalletDbError::DecryptionFailed(_)) => return Err(WalletDbError::InvalidPassphrase),
+        Err(WalletDbError::DecryptionFailed(_)) => {
+            info!(target: "audit", account = account_name; "Key session unlock failed: wrong passphrase");
+            return Err(WalletDbError::InvalidPassphrase);
+        },
         Err(e) => return Err(e),
     };
     // Also checks the keys belong to this account before trusting them.
     let wallet = account.parse_wallet_json(&wallet_json)?;
 
+    let changes = changes_guard();
+    if session_for(&account).is_some() {
+        return Ok(());
+    }
+    let current = get_account_by_name(conn, account_name)?;
+    let unchanged = current.is_some_and(|current| current.encrypted_wallet == account.encrypted_wallet);
+    if !unchanged || changes.for_name(account_name) != locks_before {
+        return Err(WalletDbError::NotUnlocked(account_name.to_string()));
+    }
     store(account_name, account.encrypted_wallet, wallet);
+    info!(target: "audit", account = account_name; "Key session unlocked");
     Ok(())
 }
 
-/// Removes and wipes the session for `account_name`. Does nothing if it is not unlocked.
+/// Stops new operations from using `account_name`'s session and drops the cached keys.
+///
+/// Removes by name, whether or not [`is_unlocked`] reports it, so call it unconditionally on
+/// logout or close. Copies of the keys already handed to running scans or sends are not revoked;
+/// cancel those. May wait for an in-progress passphrase change, delete or rename.
 pub fn lock(account_name: &str) {
-    let _changes = changes_guard();
-    take(account_name);
+    let mut changes = changes_guard();
+    let count = changes.by_name.entry(account_name.to_string()).or_default();
+    *count = count.wrapping_add(1);
+    if take(account_name).is_some() {
+        info!(target: "audit", account = account_name; "Key session locked");
+    }
 }
 
-/// Removes and wipes every session.
+/// Like [`lock`], for every session.
 pub fn lock_all() {
-    let _changes = changes_guard();
+    let mut changes = changes_guard();
+    changes.all = changes.all.wrapping_add(1);
     SESSIONS.write().unwrap_or_else(PoisonError::into_inner).clear();
+    info!(target: "audit", "All key sessions locked");
 }
 
 /// Whether `account_name` in this database has a session the key paths will use.
@@ -81,7 +125,7 @@ pub(crate) fn unlocked_wallet_type(account: &AccountRow) -> Option<WalletType> {
 
 /// Serializes changes to the session map. Take it before any SQLite write lock, and hold it from
 /// reading the row through `store` / `remove_session_for`.
-pub(crate) fn changes_guard() -> MutexGuard<'static, ()> {
+pub(crate) fn changes_guard() -> MutexGuard<'static, LockCounts> {
     CHANGES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -278,6 +322,11 @@ mod tests {
             account.decrypt_wallet_type_with_passphrase("wrong"),
             Err(WalletDbError::DecryptionFailed(_))
         ));
+        assert!(matches!(
+            account.verify_passphrase("wrong"),
+            Err(WalletDbError::DecryptionFailed(_))
+        ));
+        account.verify_passphrase("password").unwrap();
         assert!(account.get_seed_words("password").unwrap().is_some());
         account.get_keys_hex("password").unwrap();
         lock("session-gates");
@@ -381,12 +430,31 @@ mod tests {
     }
 
     #[test]
-    fn this_module_does_not_log() {
-        // Key material must never reach a log line; this module holds it, so it logs nothing.
+    fn this_module_only_logs_account_names_to_audit() {
+        // Key material must never reach a log line. The only log lines allowed here are
+        // one-line audit messages whose only field is the account name.
         let source = include_str!("session.rs");
-        for name in ["trace", "debug", "info", "warn", "error", "log"] {
-            assert!(!source.contains(&format!("{name}!(")), "{name}! used in session.rs");
-            assert!(!source.contains(&format!("{name}::")), "{name}:: used in session.rs");
+        let audit = format!("{}!(target: \"audit\"", "info");
+        let allowed_fields = [audit.clone(), format!("{audit}, account = account_name")];
+        for line in source.lines().map(str::trim) {
+            if line.contains(&format!("{}::", "log")) {
+                assert_eq!(line, format!("use {}::info;", "log"), "unexpected log import");
+            }
+            for name in ["trace", "debug", "info", "warn", "error"] {
+                if !line.contains(&format!("{name}!(")) {
+                    continue;
+                }
+                let (fields, message) = line
+                    .split_once("; \"")
+                    .or_else(|| line.split_once(", \""))
+                    .expect("audit line has a message");
+                assert!(
+                    allowed_fields.contains(&fields.to_string()),
+                    "log line not allowed: {line}"
+                );
+                assert!(message.ends_with("\");"), "log line must be one plain message: {line}");
+                assert!(!message.contains('{'), "log message must not format values: {line}");
+            }
         }
     }
 }
