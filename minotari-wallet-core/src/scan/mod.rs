@@ -47,11 +47,14 @@
 //! - `Cancelled { last_scanned_height, .. }`: the cancel token fired.
 //! - `BudgetExhausted { last_scanned_height, tip_height, .. }`: the
 //!   [`Scanner::deadline`] passed or `ScanMode::Partial { max_blocks }` were
-//!   scanned before the tip. The two can be combined; the first limit reached
-//!   stops the scan.
+//!   scanned before the tip (Continuous: the deadline passed, even when caught
+//!   up). The two can be combined; the first limit reached stops the scan.
 //!
-//! A run that returns an error sends none. The next run resumes after
-//! `last_scanned_height`.
+//! The terminal event and `ReorgDetected` always reach a bounded channel,
+//! even after a cancel. A run that returns an error sends none. The next run
+//! resumes after `last_scanned_height`, except a history backfill, which
+//! always restarts from the birthday: a deadline shorter than the whole
+//! backfill makes no lasting progress.
 //!
 //! # Resource Controls
 //!
@@ -74,7 +77,7 @@
 //!    (`is_initial_sync: false`) for confirmation and status changes, then
 //!    `Waiting { resume_in }` (the poll interval, cut short by a deadline).
 //!    The scanner is idle until the next poll. A deadline that has passed
-//!    ends the scan here with `Completed` instead.
+//!    ends the scan here with `BudgetExhausted` instead.
 //! 3. After each poll, and every `reorg_check_interval` blocks while scanning,
 //!    the stored tip blocks are checked against the chain. A reorg sends
 //!    `ReorgDetected`: blocks from `reorg_from_height` were rolled back, the

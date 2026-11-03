@@ -314,7 +314,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.clone())
             },
             ApiError::AccountNotFound(name) => {
-                warn!(account = name.as_str(); "API: Account Not Found");
+                warn!("API: Account Not Found");
                 (StatusCode::NOT_FOUND, format!("Account '{}' not found", name))
             },
             ApiError::NotFound(msg) => {

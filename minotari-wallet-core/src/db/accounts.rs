@@ -1,4 +1,4 @@
-use log::{debug, info, trace, warn};
+use log::{debug, trace, warn};
 use rusqlite::{Connection, named_params};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::from_rows;
@@ -534,7 +534,7 @@ pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDb
 /// Renames the account row. Does not touch its key session; use
 /// [`crate::utils::rename_wallet::rename_wallet`], which also locks it.
 pub(crate) fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
-    info!(
+    trace!(
         target: "audit",
         current_name = current_name,
         new_name = new_name;

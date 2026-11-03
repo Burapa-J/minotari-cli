@@ -4,7 +4,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use log::info;
+use log::trace;
 use serde::{Deserialize, Serialize};
 use tari_common_types::transaction::TxId;
 use utoipa::IntoParams;
@@ -126,7 +126,7 @@ pub async fn api_abandon_send(
     .await
     .map_err(|e| ApiError::InternalServerError(format!("Task join error: {}", e)))??;
 
-    info!(
+    trace!(
         target: "audit",
         tx_id = tx_id.to_string().as_str(),
         reconcilable = abandoned.reconcilable;

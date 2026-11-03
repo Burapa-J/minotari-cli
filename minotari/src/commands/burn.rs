@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use anyhow::anyhow;
-use log::info;
+use log::trace;
 use tari_common::configuration::Network;
 use tari_transaction_components::tari_amount::MicroMinotari;
 
@@ -76,7 +76,7 @@ pub async fn handle_burn_funds(
 
     // Persist partial burn proof before broadcasting (so it's never lost).
     persist_burn_records(&mut conn, &result, account.id, &idempotency_key)?;
-    info!(
+    trace!(
         target: "audit",
         output_hash = &*hex::encode(result.output_hash);
         "Burn proof record saved to database"
@@ -94,7 +94,7 @@ pub async fn handle_burn_funds(
     let response = client.submit_transaction(transaction).await;
     let first_broadcast = record_first_broadcast(Some(&*conn), tx_id, response);
     if first_broadcast.accepted_by_node {
-        info!(
+        trace!(
             target: "audit",
             tx_id = &*tx_id.to_string(),
             output_hash = &*hex::encode(output_hash);

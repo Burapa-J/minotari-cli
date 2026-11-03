@@ -108,6 +108,7 @@ mod tests {
         let mut files = Vec::new();
         rust_files(&crate_dir.join("src"), &mut files);
         rust_files(&crate_dir.join("../minotari-scanning/src"), &mut files);
+        rust_files(&crate_dir.join("../minotari/src"), &mut files);
 
         let forbidden = ["payref", "payment_ref", "friendly_name"];
         let mut found = Vec::new();

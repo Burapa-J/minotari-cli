@@ -4,7 +4,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use log::info;
+use log::trace;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use tari_transaction_components::tari_amount::MicroMinotari;
@@ -296,7 +296,7 @@ pub async fn api_lock_funds(
     Path(WalletParams { name }): Path<WalletParams>,
     Json(body): Json<LockFundsRequest>,
 ) -> Result<Json<LockFundsResult>, ApiError> {
-    info!(
+    trace!(
         target: "audit",
         account = &*name,
         amount = &*mask_amount(body.amount.0.into()),
@@ -446,7 +446,7 @@ pub async fn api_create_unsigned_transaction(
     Path(WalletParams { name }): Path<WalletParams>,
     Json(body): Json<CreateTransactionRequest>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    info!(
+    trace!(
         target: "audit",
         account = &*name,
         recipient_count = body.recipients.len(),

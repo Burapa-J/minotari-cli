@@ -30,9 +30,8 @@ loggers:
   "minotari":
     level: info
 
-  # Audit lines that name a transaction or wallet are logged at trace.
   "audit":
-    level: trace
+    level: info
     additive: false
     appenders:
       - stdout

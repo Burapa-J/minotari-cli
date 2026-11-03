@@ -181,7 +181,8 @@ impl Scanner {
     /// `Some(n)` holds at most `n` events: when it is full the scan waits for
     /// the consumer, so a slow consumer slows the scan instead of growing
     /// memory. Cancelling stops the wait; events that do not fit after a cancel
-    /// are dropped. `None` (the default) is unbounded.
+    /// are dropped, except the terminal event and `ReorgDetected`, which still
+    /// wait for room. `None` (the default) is unbounded.
     pub fn event_buffer(mut self, size: Option<usize>) -> Self {
         self.event_buffer = size;
         self
@@ -190,8 +191,11 @@ impl Scanner {
     /// Stops the scan at the first batch boundary after `deadline`.
     ///
     /// The scan then ends with [`ScanStatusEvent::BudgetExhausted`](crate::ScanStatusEvent::BudgetExhausted)
-    /// (or `Completed` if it had reached the tip) and the next run resumes from
-    /// the last scanned height. It can be combined with
+    /// (or `Completed` if a Full or Partial scan had reached the tip) and the
+    /// next run resumes from the last scanned height. A history backfill
+    /// ([`run_backfill`](Self::run_backfill)) is the exception: it always
+    /// restarts from the birthday, so a deadline shorter than the whole
+    /// backfill makes no lasting progress. It can be combined with
     /// [`ScanMode::Partial`]: the scan stops at whichever limit comes first.
     pub fn deadline(mut self, deadline: Instant) -> Self {
         self.deadline = Some(deadline);
@@ -401,7 +405,8 @@ impl Scanner {
     ///
     /// Call this after a fast sync has completed and the wallet is already usable.
     /// The backfill fills in complete transaction history (spent outputs, inputs,
-    /// balance changes) for the period that was fast-synced.
+    /// balance changes) for the period that was fast-synced. A cancelled or
+    /// out-of-time backfill does not resume: the next one starts from the birthday.
     pub async fn run_backfill(self, backfill_to_height: u64) -> Result<(Vec<WalletEvent>, bool), ScanError> {
         self.run_backfill_internal(backfill_to_height, EventChannel::None).await
     }

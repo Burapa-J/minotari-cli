@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use log::{info, warn};
+use log::{trace, warn};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -156,7 +156,7 @@ pub async fn rollback_account_to_height(
             .ok_or_else(|| WalletDbError::InvalidInput(format!("Account not found: {}", account_name)))?;
         account.verify_passphrase(&password)?;
 
-        info!(
+        trace!(
             target: "audit",
             account = &*account_name,
             from_height = from_height;

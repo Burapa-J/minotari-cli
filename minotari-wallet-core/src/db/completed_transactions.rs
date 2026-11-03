@@ -98,7 +98,7 @@ pub fn create_completed_transaction(
     sent_output_hash: Option<String>,
     tx_id: TxId,
 ) -> WalletDbResult<()> {
-    debug!(
+    trace!(
         account_id = account_id,
         pending_id = pending_tx_id;
         "DB: Creating completed transaction"

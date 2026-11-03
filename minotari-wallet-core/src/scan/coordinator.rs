@@ -41,6 +41,8 @@ enum ScanStop {
     BlockLimit,
     /// The deadline passed.
     Deadline,
+    /// The deadline of a Continuous scan passed. Never reported as `Completed`.
+    ContinuousDeadline,
 }
 
 impl ScanStop {
@@ -53,7 +55,7 @@ impl ScanStop {
     fn runs_post_scan(self) -> bool {
         match self {
             ScanStop::CaughtUp | ScanStop::BlockLimit => true,
-            ScanStop::Cancelled | ScanStop::Deadline => false,
+            ScanStop::Cancelled | ScanStop::Deadline | ScanStop::ContinuousDeadline => false,
         }
     }
 }
@@ -309,6 +311,10 @@ impl ScanCoordinator {
         // A node that reports a reorg at every check must not keep the scan rescanning.
         let mut rewind_high_water: u64 = 0;
         let mut rewinds_without_progress: u32 = 0;
+        let deadline_stop = match mode {
+            ScanMode::Continuous { .. } => ScanStop::ContinuousDeadline,
+            _ => ScanStop::Deadline,
+        };
         loop {
             if let Some(token) = &cancel_token
                 && token.is_cancelled()
@@ -525,13 +531,7 @@ impl ScanCoordinator {
                 if self.deadline_passed() {
                     info!(last_scanned_block = max_new_height_in_batch; "Scan deadline reached");
                     return self
-                        .stop_scan(
-                            &targets,
-                            ScanStop::Deadline,
-                            tip_height,
-                            total_scanned_globally,
-                            all_events,
-                        )
+                        .stop_scan(&targets, deadline_stop, tip_height, total_scanned_globally, all_events)
                         .await;
                 }
             }
@@ -570,9 +570,18 @@ impl ScanCoordinator {
                 self.finish_pass(&targets, ScanStop::CaughtUp, &mut all_events, max_buffered_events)
                     .await?;
 
-                if let ScanMode::Continuous { poll_interval } = mode
-                    && !self.deadline_passed()
-                {
+                if let ScanMode::Continuous { poll_interval } = mode {
+                    if self.deadline_passed() {
+                        return self
+                            .stop_scan(
+                                &targets,
+                                ScanStop::ContinuousDeadline,
+                                tip_height,
+                                total_scanned_globally,
+                                all_events,
+                            )
+                            .await;
+                    }
                     // Wake up at the deadline rather than sleep past it.
                     let poll_interval = match self.deadline {
                         Some(deadline) => poll_interval.min(deadline.saturating_duration_since(Instant::now())),
@@ -683,9 +692,7 @@ impl ScanCoordinator {
         scanner: &mut HttpBlockchainScanner<KeyManager>,
         scanning_offset: u64,
     ) -> Result<(), ScanError> {
-        for target in targets.iter_mut() {
-            target.next_block_to_scan = target.next_block_to_scan.saturating_sub(1);
-
+        for target in targets.iter() {
             self.events
                 .send(ProcessingEvent::ScanStatus(ScanStatusEvent::Waiting {
                     account_id: target.account.id,
@@ -694,12 +701,23 @@ impl ScanCoordinator {
                 .await;
         }
 
-        // A cancel here is picked up at the top of the scan loop.
+        // A cancel here is picked up at the top of the scan loop, with every
+        // cursor still just past the last scanned block.
         if unless_cancelled(cancel, tokio::time::sleep(interval)).await.is_none() {
             return Ok(());
         }
+        let before: Vec<u64> = targets.iter().map(|target| target.next_block_to_scan).collect();
         self.check_global_reorgs(targets, db_handler, scanner, scanning_offset, cancel)
             .await?;
+        if cancel.as_ref().is_some_and(|token| token.is_cancelled()) {
+            return Ok(());
+        }
+        // Rescan the last block of every account the reorg check did not move.
+        for (target, height) in targets.iter_mut().zip(before) {
+            if target.next_block_to_scan == height {
+                target.next_block_to_scan = height.saturating_sub(1);
+            }
+        }
         Ok(())
     }
 
@@ -720,7 +738,7 @@ impl ScanCoordinator {
 
     /// Sends one terminal event per account and returns whether blocks remain.
     ///
-    /// A budget stop at or past `tip_height` is reported as `Completed`.
+    /// A Full or Partial budget stop at or past `tip_height` is reported as `Completed`.
     async fn send_terminal_events(
         &self,
         targets: &[AccountSyncTarget],
@@ -740,6 +758,14 @@ impl ScanCoordinator {
                         last_scanned_height,
                     }
                 },
+                ScanStop::ContinuousDeadline => {
+                    more_blocks = true;
+                    ScanStatusEvent::BudgetExhausted {
+                        account_id,
+                        last_scanned_height,
+                        tip_height,
+                    }
+                },
                 ScanStop::BlockLimit | ScanStop::Deadline if last_scanned_height < tip_height => {
                     more_blocks = true;
                     ScanStatusEvent::BudgetExhausted {
@@ -754,7 +780,7 @@ impl ScanCoordinator {
                     total_blocks_scanned,
                 },
             };
-            self.events.send(ProcessingEvent::ScanStatus(event)).await;
+            self.events.send_always(ProcessingEvent::ScanStatus(event)).await;
         }
         more_blocks
     }
@@ -773,7 +799,7 @@ impl ScanCoordinator {
         }
         for (account_id, last_scanned_height) in heights {
             self.events
-                .send(ProcessingEvent::ScanStatus(ScanStatusEvent::Cancelled {
+                .send_always(ProcessingEvent::ScanStatus(ScanStatusEvent::Cancelled {
                     account_id,
                     last_scanned_height,
                 }))
@@ -932,7 +958,7 @@ impl ScanCoordinator {
 
     async fn emit_reorg_event(&self, account_id: i64, reorg_info: reorg::ReorgInformation, resume_height: u64) {
         self.events
-            .send(ProcessingEvent::ReorgDetected(ReorgDetectedEvent {
+            .send_always(ProcessingEvent::ReorgDetected(ReorgDetectedEvent {
                 account_id,
                 reorg_from_height: reorg_info.rolled_back_from_height,
                 new_height: resume_height,
@@ -2212,7 +2238,7 @@ mod tests {
     async fn cancelling_a_scan_blocked_on_a_full_event_channel_stops_it() {
         let setup = setup(1500, 1600).await;
         let token = CancellationToken::new();
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let coordinator = new_coordinator(
             &setup.pool,
             &setup.server,
@@ -2223,32 +2249,52 @@ mod tests {
             1_000,
         );
 
-        let scan = coordinator.run(
-            vec![account(&setup.pool)],
-            "password",
-            ScanMode::Full,
-            0,
-            Some(token.clone()),
-        );
-        // Read nothing until the channel is full and the scan waits on it, then cancel.
-        let cancel = async {
+        let scan = async {
+            let result = coordinator
+                .run(
+                    vec![account(&setup.pool)],
+                    "password",
+                    ScanMode::Full,
+                    0,
+                    Some(token.clone()),
+                )
+                .await;
+            (result, std::time::Instant::now())
+        };
+        // Read nothing until the channel is full and the scan waits on it, then
+        // cancel and read every event up to the terminal one.
+        let cancel_then_drain = async {
             while receiver.capacity() > 0 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
             token.cancel();
-            std::time::Instant::now()
+            let cancelled_at = std::time::Instant::now();
+            let mut events = Vec::new();
+            while let Some(event) = receiver.recv().await {
+                let terminal = is_cancelled(&event);
+                events.push(event);
+                if terminal {
+                    break;
+                }
+            }
+            (cancelled_at, events)
         };
-        let (result, cancelled_at) =
-            tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(scan, cancel) })
+        let ((result, stopped_at), (cancelled_at, mut events)) =
+            tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(scan, cancel_then_drain) })
                 .await
                 .expect("the scan stops when cancelled");
         let (_, more_blocks) = result.expect("a cancelled scan is not an error");
         assert!(more_blocks);
         assert!(
-            cancelled_at.elapsed() < Duration::from_secs(2),
-            "cancelling must not wait for the consumer"
+            stopped_at.duration_since(cancelled_at) < Duration::from_secs(2),
+            "cancelling must not wait for the block download or the full channel"
         );
+        while let Ok(event) = receiver.try_recv() {
+            events.push(event);
+        }
+        assert_eq!(events.iter().filter(|e| is_cancelled(e)).count(), 1);
+        assert_eq!(terminal_count(&events), 1);
         assert!(
             max_tip_height(&setup.pool, setup.account_id) <= 1510,
             "the scan stops within one batch"
@@ -2474,6 +2520,49 @@ mod tests {
         assert!(progress < waiting && waiting < cancelled);
         // Caught up is `Waiting`; the only terminal event is the cancel.
         assert_eq!(terminal_count(&events), 1);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ProcessingEvent::ScanStatus(ScanStatusEvent::Cancelled {
+                    last_scanned_height: 1505,
+                    ..
+                })
+            )),
+            "a cancel during the poll wait reports the tip as scanned"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_continuous_scan_past_its_deadline_ends_out_of_budget_not_completed() {
+        let mut setup = setup(1500, 1505).await;
+        setup.coordinator.deadline = Some(Instant::now() + POLL_INTERVAL);
+
+        let (_, more_blocks) = tokio::time::timeout(
+            Duration::from_secs(30),
+            setup.coordinator.run(
+                vec![account(&setup.pool)],
+                "password",
+                ScanMode::Continuous {
+                    poll_interval: POLL_INTERVAL * 10,
+                },
+                0,
+                None,
+            ),
+        )
+        .await
+        .expect("the deadline stops the continuous scan")
+        .expect("scan");
+        assert!(more_blocks);
+        let events = drain(&mut setup.events);
+        assert_eq!(terminal_count(&events), 1);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ProcessingEvent::ScanStatus(ScanStatusEvent::BudgetExhausted {
+                last_scanned_height: 1505,
+                tip_height: 1505,
+                ..
+            })
+        )));
     }
 
     #[tokio::test]

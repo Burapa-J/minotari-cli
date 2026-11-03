@@ -237,6 +237,7 @@ pub(crate) enum EventChannel {
     Unbounded(mpsc::UnboundedSender<ProcessingEvent>),
     /// Waits for room in the channel until `cancel` fires; after that an event
     /// that does not fit is dropped, so a stalled consumer cannot block a cancel.
+    /// Terminal and reorg events always wait (see [`EventChannel::send_always`]).
     Bounded {
         sender: mpsc::Sender<ProcessingEvent>,
         cancel: Option<CancellationToken>,
@@ -261,6 +262,20 @@ impl EventChannel {
                 if let Some(permit) = permit {
                     permit.send(event);
                 }
+            },
+        }
+    }
+
+    /// Sends an event that must reach the consumer (a terminal event, a reorg):
+    /// it waits for room even after a cancel, and is lost only if the receiver is gone.
+    pub(crate) async fn send_always(&self, event: ProcessingEvent) {
+        match self {
+            EventChannel::None => {},
+            EventChannel::Unbounded(sender) => {
+                let _unused = sender.send(event);
+            },
+            EventChannel::Bounded { sender, .. } => {
+                let _unused = sender.send(event).await;
             },
         }
     }
