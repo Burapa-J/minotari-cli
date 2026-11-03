@@ -14,6 +14,8 @@
 //! 6. Generate the ownership proof (Schnorr signature over the commitment and `C`)
 //! 7. Return the signed [`Transaction`] and a [`NewBurnProof`] for DB storage
 
+pub mod proof_files;
+
 use anyhow::anyhow;
 use log::info;
 use rusqlite::Connection;

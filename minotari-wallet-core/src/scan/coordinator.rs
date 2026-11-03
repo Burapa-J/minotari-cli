@@ -735,7 +735,7 @@ impl<E: EventSender + Clone + Send + 'static> ScanCoordinator<E> {
         if let Some(dir) = &self.burn_proofs_dir {
             for (claim_public_key, commitment) in &info.invalidated_burn_proof_files {
                 if let Err(error) =
-                    crate::tasks::burn_proof_worker::remove_proof_file(dir, claim_public_key, commitment).await
+                    crate::transactions::burn::proof_files::remove_proof_file(dir, claim_public_key, commitment).await
                 {
                     warn!(error:% = error; "Could not remove invalidated burn proof file");
                 }
