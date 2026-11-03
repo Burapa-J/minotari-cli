@@ -134,6 +134,13 @@ impl ScanCoordinator {
         self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
     }
 
+    /// Whether the deadline has passed with some account still below `end_height`.
+    /// A deadline that passes on the batch reaching the end does not stop the
+    /// scan, so it finishes the normal way.
+    fn deadline_short_of(&self, targets: &[AccountSyncTarget], end_height: u64) -> bool {
+        self.deadline_passed() && targets.iter().any(|target| target.next_block_to_scan <= end_height)
+    }
+
     /// The main entry point for the multi-account scan.
     pub async fn run(
         &self,
@@ -528,7 +535,7 @@ impl ScanCoordinator {
                         )
                         .await;
                 }
-                if self.deadline_passed() {
+                if self.deadline_short_of(&targets, tip_height) {
                     info!(last_scanned_block = max_new_height_in_batch; "Scan deadline reached");
                     return self
                         .stop_scan(&targets, deadline_stop, tip_height, total_scanned_globally, all_events)
@@ -1304,7 +1311,7 @@ impl ScanCoordinator {
                 }
             }
 
-            if self.deadline_passed() {
+            if self.deadline_short_of(targets, end_height) {
                 stop = ScanStop::Deadline;
                 break;
             }
@@ -1410,7 +1417,7 @@ impl ScanCoordinator {
                 }
             }
 
-            if self.deadline_passed() {
+            if self.deadline_short_of(targets, tip_height) {
                 stop = ScanStop::Deadline;
                 break;
             }
@@ -1527,7 +1534,7 @@ impl ScanCoordinator {
                 }
             }
 
-            if self.deadline_passed() {
+            if self.deadline_short_of(targets, end_height) {
                 stop = ScanStop::Deadline;
                 break;
             }
@@ -2320,6 +2327,55 @@ mod tests {
         assert_eq!(terminal_count(&events), 1);
         assert_eq!(budget_exhausted_tip(&events), Some(BACKFILL_TO));
         assert!(!events.iter().any(is_phase_completed));
+    }
+
+    #[tokio::test]
+    async fn a_backfill_whose_deadline_passes_on_its_last_batch_still_finishes() {
+        let mut setup = setup(1500, 1600).await;
+        setup.coordinator.deadline = Some(Instant::now());
+        // Inside the first 10-block batch from the birthday (1450).
+        let backfill_to = 1455;
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run_backfill(vec![account(&setup.pool)], "password", backfill_to, 0, None)
+            .await
+            .expect("backfill");
+        assert!(!more_blocks);
+        let events = drain(&mut setup.events);
+
+        assert_eq!(terminal_count(&events), 1);
+        let phase = position(&events, is_phase_completed).expect("the backfill's resolve step and phase end run");
+        let completed = position(&events, |e| {
+            matches!(e, ProcessingEvent::ScanStatus(ScanStatusEvent::Completed { .. }))
+        })
+        .expect("completed");
+        assert!(phase < completed);
+    }
+
+    #[tokio::test]
+    async fn a_full_scan_whose_deadline_passes_on_its_last_batch_still_runs_the_post_scan_monitor() {
+        let mut setup = setup(1500, 1505).await;
+        setup.coordinator.deadline = Some(Instant::now());
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(vec![account(&setup.pool)], "password", ScanMode::Full, 0, None)
+            .await
+            .expect("scan");
+        assert!(!more_blocks);
+        let events = drain(&mut setup.events);
+
+        assert_eq!(terminal_count(&events), 1);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ProcessingEvent::ScanStatus(ScanStatusEvent::Completed { final_height: 1505, .. })
+        )));
+        assert_eq!(
+            displayed_status(&setup.pool),
+            TransactionDisplayStatus::Confirmed,
+            "the post-scan monitor ran"
+        );
     }
 
     #[tokio::test]

@@ -157,7 +157,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_request_shows_its_cause_but_not_its_url() {
-        let error = reqwest::get("http://127.0.0.1:1/transactions?excess_sig_sig=abcd")
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let error = client
+            .get("http://127.0.0.1:1/transactions?excess_sig_sig=abcd")
+            .send()
             .await
             .expect_err("nothing listens on port 1");
         let text = HttpError::from(error).to_string();
