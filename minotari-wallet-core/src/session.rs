@@ -1,8 +1,8 @@
 //! Per-process key sessions.
 //!
-//! [`unlock`] runs the Argon2 key derivation once and keeps the decrypted wallet in memory that
-//! wipes itself, so later address, scan, send and signing calls for that account need neither the
-//! passphrase nor another derivation. [`lock`] drops the session and wipes the keys.
+//! [`unlock`] decrypts and parses the account's wallet once and keeps it in memory that wipes
+//! itself, so later address, scan, send and signing calls for that account need neither the
+//! passphrase nor any Argon2 work. [`lock`] drops the session and wipes the keys.
 //!
 //! Sessions are keyed by account name and tied to the ciphertext they were decrypted from, so a
 //! session never applies to a different row (another database, or a re-encrypted wallet).
@@ -11,28 +11,33 @@
 //! no key material can be formatted into a log line.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, PoisonError, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock};
 
 use rusqlite::Connection;
 use tari_transaction_components::key_manager::wallet_types::WalletType;
-use zeroize::Zeroizing;
 
 use crate::db::{AccountRow, WalletDbError, WalletDbResult, get_account_by_name};
 
-/// An account's decrypted keys. The wallet JSON is wiped when the session drops.
+/// An account's decrypted keys. Its secret keys and cipher seed zeroize themselves on drop.
 pub struct UnlockedAccount {
     encrypted_wallet: Vec<u8>,
-    wallet_json: Zeroizing<Vec<u8>>,
+    wallet: WalletType,
 }
 
 static SESSIONS: LazyLock<RwLock<HashMap<String, Arc<UnlockedAccount>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+// Held by every operation that adds or removes sessions, for its whole duration, so a lock
+// cannot land in the middle of an unlock or a passphrase change and then be undone by it.
+// Key paths only read `SESSIONS` and never wait on it.
+static CHANGES: Mutex<()> = Mutex::new(());
 
 /// Unlocks `account_name` with `passphrase`, running Argon2 once.
 ///
 /// Returns [`WalletDbError::InvalidPassphrase`] on a wrong passphrase and stores nothing. Does
 /// nothing if the account is already unlocked.
 pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> WalletDbResult<()> {
+    let _changes = changes_guard();
     let account = get_account_by_name(conn, account_name)?
         .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", account_name)))?;
     if session_for(&account).is_some() {
@@ -44,20 +49,22 @@ pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> Wallet
         Err(WalletDbError::DecryptionFailed(_)) => return Err(WalletDbError::InvalidPassphrase),
         Err(e) => return Err(e),
     };
-    // Checks the keys belong to this account before trusting them.
-    account.parse_wallet_json(&wallet_json)?;
+    // Also checks the keys belong to this account before trusting them.
+    let wallet = account.parse_wallet_json(&wallet_json)?;
 
-    store(account_name, account.encrypted_wallet, wallet_json);
+    store(account_name, account.encrypted_wallet, wallet);
     Ok(())
 }
 
 /// Removes and wipes the session for `account_name`. Does nothing if it is not unlocked.
 pub fn lock(account_name: &str) {
+    let _changes = changes_guard();
     take(account_name);
 }
 
 /// Removes and wipes every session.
 pub fn lock_all() {
+    let _changes = changes_guard();
     SESSIONS.write().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
@@ -68,11 +75,13 @@ pub fn is_unlocked(conn: &Connection, account_name: &str) -> WalletDbResult<bool
 }
 
 /// The wallet from `account`'s session, or `None` when it has no session for this row.
-pub(crate) fn unlocked_wallet_type(account: &AccountRow) -> WalletDbResult<Option<WalletType>> {
-    match session_for(account) {
-        Some(session) => account.parse_wallet_json(&session.wallet_json).map(Some),
-        None => Ok(None),
-    }
+pub(crate) fn unlocked_wallet_type(account: &AccountRow) -> Option<WalletType> {
+    session_for(account).map(|session| session.wallet.clone())
+}
+
+/// Serializes changes to the session map; hold it across `take` … `store` / `restore`.
+pub(crate) fn changes_guard() -> MutexGuard<'static, ()> {
+    CHANGES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(crate) fn take(account_name: &str) -> Option<Arc<UnlockedAccount>> {
@@ -82,11 +91,12 @@ pub(crate) fn take(account_name: &str) -> Option<Arc<UnlockedAccount>> {
         .remove(account_name)
 }
 
-/// Stores a session for wallet JSON already decrypted from `encrypted_wallet`.
-pub(crate) fn store(account_name: &str, encrypted_wallet: Vec<u8>, wallet_json: Zeroizing<Vec<u8>>) {
+/// Stores a session for a wallet already decrypted from `encrypted_wallet` and checked
+/// against the account's fingerprint.
+pub(crate) fn store(account_name: &str, encrypted_wallet: Vec<u8>, wallet: WalletType) {
     let session = UnlockedAccount {
         encrypted_wallet,
-        wallet_json,
+        wallet,
     };
     restore(account_name, Arc::new(session));
 }
@@ -111,6 +121,7 @@ fn session_for(account: &AccountRow) -> Option<Arc<UnlockedAccount>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::WALLET_PARSES;
     use crate::db::{change_passphrase, create_account, delete_account, init_db, update_account_name};
     use crate::signing::{SigningError, sign_message, sign_message_unlocked, verify_message};
     use crate::utils::crypto::KEY_DERIVATIONS;
@@ -120,6 +131,10 @@ mod tests {
 
     fn derivations() -> usize {
         KEY_DERIVATIONS.with(|count| count.get())
+    }
+
+    fn wallet_parses() -> usize {
+        WALLET_PARSES.with(|count| count.get())
     }
 
     fn new_account(conn: &Connection, name: &str) -> AccountRow {
@@ -138,6 +153,9 @@ mod tests {
         let before = derivations();
         unlock(&conn, "session-once", "password").unwrap();
         unlock(&conn, "session-once", "password").unwrap();
+        // Parsing a seed wallet decodes its cipher seed, which runs Argon2 too, so session hits
+        // must not parse at all.
+        let parses_before = wallet_parses();
         for _ in 0..5 {
             let address = account.get_address(Network::LocalNet, "").unwrap();
             account
@@ -149,6 +167,11 @@ mod tests {
             sign_message(&account, "", "hello").unwrap();
         }
         assert_eq!(derivations() - before, 1);
+        assert_eq!(
+            wallet_parses(),
+            parses_before,
+            "session hits must not re-parse the wallet"
+        );
         lock("session-once");
     }
 
@@ -208,7 +231,13 @@ mod tests {
         assert_eq!(derivations() - before, 2);
         assert!(is_unlocked(&conn, "session-change").unwrap());
         let account = get_account_by_name(&conn, "session-change").unwrap().unwrap();
+        let parses_before = wallet_parses();
         sign_message_unlocked(&account, "hello").unwrap();
+        assert_eq!(
+            wallet_parses(),
+            parses_before,
+            "the new session holds the parsed wallet"
+        );
 
         lock("session-change");
         assert!(matches!(

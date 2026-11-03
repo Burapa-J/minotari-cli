@@ -59,6 +59,8 @@ mod error;
 pub use error::{WalletDbError, WalletDbResult};
 
 mod accounts;
+#[cfg(test)]
+pub(crate) use accounts::WALLET_PARSES;
 pub use accounts::{
     AccountBalance, AccountRow, change_passphrase, create_account, delete_account, get_account_by_name, get_accounts,
     get_balance, update_account_name,
