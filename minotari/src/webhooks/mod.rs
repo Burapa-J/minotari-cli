@@ -1,6 +1,4 @@
-pub mod models;
 pub mod sender;
-pub mod utils;
 pub mod worker;
 
-pub use models::WebhookTriggerConfig;
+pub use minotari_wallet_core::webhooks::{WebhookTriggerConfig, models, utils};

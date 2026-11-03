@@ -168,7 +168,7 @@ pub async fn rollback_account_to_height(
         tx.commit()?;
 
         for (claim_public_key, commitment) in info.invalidated_burn_proof_files {
-            if let Err(error) = std::fs::remove_file(crate::tasks::burn_proof_worker::proof_file_path(
+            if let Err(error) = std::fs::remove_file(crate::transactions::burn::proof_files::proof_file_path(
                 &burn_proofs_dir,
                 &claim_public_key,
                 &commitment,
@@ -401,7 +401,7 @@ mod tests {
 
         let dir = setup.config.effective_burn_proofs_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let path = crate::tasks::burn_proof_worker::proof_file_path(&dir, &claim_public_key, &commitment);
+        let path = crate::transactions::burn::proof_files::proof_file_path(&dir, &claim_public_key, &commitment);
         std::fs::write(&path, "old orphaned claim").unwrap();
 
         rollback_account_to_height(setup.config.database_path.clone(), PASSWORD, "default", 10, None, dir)
@@ -436,7 +436,7 @@ mod tests {
                 rusqlite::params![account_id, vec![byte; 32], commitment, claim_public_key, vec![0u8; 32]],
             )
             .unwrap();
-            paths.push(crate::tasks::burn_proof_worker::proof_file_path(
+            paths.push(crate::transactions::burn::proof_files::proof_file_path(
                 &dir,
                 &claim_public_key,
                 &commitment,

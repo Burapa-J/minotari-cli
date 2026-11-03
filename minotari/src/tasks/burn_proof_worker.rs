@@ -33,6 +33,7 @@ use crate::{
         remember_pending_burn_proof_height, reset_completed_burn_proof_for_missing_file,
     },
     http::{HttpError, WalletHttpClient},
+    transactions::burn::proof_files::{proof_file_path, remove_proof_file},
 };
 
 const LOG_TARGET: &str = "wallet::tasks::burn_proof_worker";
@@ -318,26 +319,6 @@ impl BurnProofWorker {
         info!(target: LOG_TARGET, path = &*final_path.display().to_string(); "Wrote complete burn proof file");
 
         Ok(())
-    }
-}
-
-pub(crate) fn proof_file_path(
-    burn_proofs_dir: &std::path::Path,
-    claim_public_key_hex: &str,
-    commitment: &[u8],
-) -> PathBuf {
-    burn_proofs_dir.join(format!("{}-{}.json", claim_public_key_hex, hex::encode(commitment)))
-}
-
-pub(crate) async fn remove_proof_file(
-    burn_proofs_dir: &std::path::Path,
-    claim_public_key_hex: &str,
-    commitment: &[u8],
-) -> Result<(), anyhow::Error> {
-    match fs::remove_file(proof_file_path(burn_proofs_dir, claim_public_key_hex, commitment)).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
     }
 }
 

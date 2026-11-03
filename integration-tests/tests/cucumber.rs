@@ -81,8 +81,10 @@ fn ensure_minotari_binary_built() {
     // changes to those crates and CLI-driven scenarios would test old code.
     let watched: Vec<PathBuf> = vec![
         workspace_root.join("minotari/src"),
-        workspace_root.join("minotari/migrations"),
         workspace_root.join("minotari/Cargo.toml"),
+        workspace_root.join("minotari-wallet-core/src"),
+        workspace_root.join("minotari-wallet-core/migrations"),
+        workspace_root.join("minotari-wallet-core/Cargo.toml"),
         workspace_root.join("minotari-scanning/src"),
         workspace_root.join("minotari-scanning/Cargo.toml"),
         workspace_root.join("Cargo.lock"),
