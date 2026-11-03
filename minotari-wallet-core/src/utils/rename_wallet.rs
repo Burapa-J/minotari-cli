@@ -1,8 +1,9 @@
-use crate::db::{self, init_db};
+use crate::db::{self, WalletDbError, init_db};
+use crate::session;
 use anyhow::Context;
 use std::path::Path;
 
-/// Renames a wallet account in the database.
+/// Renames a wallet account in the database and locks its key session.
 ///
 /// # Parameters
 ///
@@ -13,11 +14,16 @@ pub fn rename_wallet(database_file: &Path, current_name: &str, new_name: &str) -
     let pool = init_db(database_file.to_path_buf()).context("Failed to initialize database")?;
     let mut conn = pool.get().context("Failed to get DB connection from pool")?;
 
+    // Held through the commit so no unlock can re-store the session from the old row.
+    let _session_changes = session::changes_guard();
     let tx = conn.transaction()?;
 
+    let account = db::get_account_by_name(&tx, current_name)?
+        .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", current_name)))?;
     db::update_account_name(&tx, current_name, new_name)?;
 
     tx.commit()?;
+    session::remove_session_for(&account);
 
     Ok(())
 }

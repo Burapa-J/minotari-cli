@@ -79,7 +79,8 @@ pub(crate) fn unlocked_wallet_type(account: &AccountRow) -> Option<WalletType> {
     session_for(account).map(|session| session.wallet.clone())
 }
 
-/// Serializes changes to the session map; hold it across `take` … `store` / `restore`.
+/// Serializes changes to the session map. Take it before any SQLite write lock, and hold it from
+/// reading the row through `store` / `remove_session_for`.
 pub(crate) fn changes_guard() -> MutexGuard<'static, ()> {
     CHANGES.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -98,14 +99,22 @@ pub(crate) fn store(account_name: &str, encrypted_wallet: Vec<u8>, wallet: Walle
         encrypted_wallet,
         wallet,
     };
-    restore(account_name, Arc::new(session));
-}
-
-pub(crate) fn restore(account_name: &str, session: Arc<UnlockedAccount>) {
     SESSIONS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(account_name.to_string(), session);
+        .insert(account_name.to_string(), Arc::new(session));
+}
+
+/// Whether `account` (as read from its database) has a session.
+pub(crate) fn has_session(account: &AccountRow) -> bool {
+    session_for(account).is_some()
+}
+
+/// Removes `account`'s session, leaving a same-named account's session from another database alone.
+pub(crate) fn remove_session_for(account: &AccountRow) {
+    if has_session(account) {
+        take(&account.friendly_name);
+    }
 }
 
 fn session_for(account: &AccountRow) -> Option<Arc<UnlockedAccount>> {
@@ -122,9 +131,10 @@ fn session_for(account: &AccountRow) -> Option<Arc<UnlockedAccount>> {
 mod tests {
     use super::*;
     use crate::db::WALLET_PARSES;
-    use crate::db::{change_passphrase, create_account, delete_account, init_db, update_account_name};
+    use crate::db::{change_passphrase, create_account, init_db};
     use crate::signing::{SigningError, sign_message, sign_message_unlocked, verify_message};
     use crate::utils::crypto::KEY_DERIVATIONS;
+    use crate::utils::{delete_wallet::delete_wallet, rename_wallet::rename_wallet};
     use tari_common::configuration::Network;
     use tari_common_types::seeds::cipher_seed::CipherSeed;
     use tari_transaction_components::key_manager::wallet_types::SeedWordsWallet;
@@ -300,20 +310,54 @@ mod tests {
     #[test]
     fn delete_and_rename_lock_the_session() {
         let dir = tempfile::tempdir().unwrap();
-        let pool = init_db(dir.path().join("session.db")).unwrap();
+        let db_path = dir.path().join("session.db");
+        let pool = init_db(db_path.clone()).unwrap();
         let conn = pool.get().unwrap();
         new_account(&conn, "session-delete");
         new_account(&conn, "session-rename");
         unlock(&conn, "session-delete", "password").unwrap();
         unlock(&conn, "session-rename", "password").unwrap();
 
-        delete_account(&conn, "session-delete").unwrap();
-        update_account_name(&conn, "session-rename", "session-renamed").unwrap();
+        delete_wallet(&db_path, "session-delete").unwrap();
+        rename_wallet(&db_path, "session-rename", "session-renamed").unwrap();
         // The rows are gone or renamed, so check the session map itself.
         let sessions = SESSIONS.read().unwrap();
         assert!(!sessions.contains_key("session-delete"));
         assert!(!sessions.contains_key("session-rename"));
         assert!(!sessions.contains_key("session-renamed"));
+    }
+
+    #[test]
+    fn changing_a_passphrase_leaves_a_same_named_account_in_another_database_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_pool = init_db(dir.path().join("first.db")).unwrap();
+        let second_pool = init_db(dir.path().join("second.db")).unwrap();
+        let first_conn = first_pool.get().unwrap();
+        let mut second_conn = second_pool.get().unwrap();
+        new_account(&first_conn, "session-change-shared");
+        new_account(&second_conn, "session-change-shared");
+        unlock(&first_conn, "session-change-shared", "password").unwrap();
+
+        change_passphrase(&mut second_conn, "session-change-shared", "password", "new").unwrap();
+        assert!(is_unlocked(&first_conn, "session-change-shared").unwrap());
+        assert!(!is_unlocked(&second_conn, "session-change-shared").unwrap());
+        lock("session-change-shared");
+    }
+
+    #[test]
+    fn deleting_a_same_named_account_in_another_database_keeps_this_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let second_path = dir.path().join("second.db");
+        let first_pool = init_db(dir.path().join("first.db")).unwrap();
+        let second_pool = init_db(second_path.clone()).unwrap();
+        let first_conn = first_pool.get().unwrap();
+        new_account(&first_conn, "session-delete-shared");
+        new_account(&second_pool.get().unwrap(), "session-delete-shared");
+        unlock(&first_conn, "session-delete-shared", "password").unwrap();
+
+        delete_wallet(&second_path, "session-delete-shared").unwrap();
+        assert!(is_unlocked(&first_conn, "session-delete-shared").unwrap());
+        lock("session-delete-shared");
     }
 
     #[test]

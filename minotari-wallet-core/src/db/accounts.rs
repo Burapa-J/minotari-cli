@@ -447,6 +447,8 @@ fn get_balance_in_snapshot(conn: &Connection, account_id: i64) -> WalletDbResult
     })
 }
 
+/// Deletes the account row and its data. Does not touch its key session; use
+/// [`crate::utils::delete_wallet::delete_wallet`], which also locks it.
 pub fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
     info!(
         target: "audit",
@@ -504,12 +506,13 @@ pub fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<
         )));
     }
 
-    session::lock(friendly_name);
     info!(target: "audit", account = friendly_name; "Account successfully deleted");
 
     Ok(())
 }
 
+/// Renames the account row. Does not touch its key session; use
+/// [`crate::utils::rename_wallet::rename_wallet`], which also locks it.
 pub fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
     info!(
         target: "audit",
@@ -549,7 +552,6 @@ pub fn update_account_name(conn: &Connection, current_name: &str, new_name: &str
             current_name
         )));
     }
-    session::lock(current_name);
 
     Ok(())
 }
@@ -580,26 +582,19 @@ pub fn change_passphrase(
     // `secure_delete` is turned on for the rewrite only; put the connection back as it was.
     let previous_secure_delete: i64 = conn.pragma_query_value(None, "secure_delete", |row| row.get(0))?;
 
-    // Lock for the rewrite; a failed change puts the session back, a successful one is unlocked
-    // again from the re-encrypted wallet, with nothing left that can fail after the commit.
+    // No other session change can run until this one is done. Once committed, the old session no
+    // longer matches the row; if this account was unlocked, it is unlocked again from the
+    // re-encrypted wallet, with nothing left that can fail after the commit.
     let _session_changes = session::changes_guard();
-    let previous_session = session::take(account_name);
     let result = rewrite_encrypted_wallet(conn, account_name, old_password, new_password);
     if let Err(e) = conn.pragma_update(None, "secure_delete", previous_secure_delete) {
         warn!(error:% = e; "DB: Failed to restore secure_delete after passphrase change");
     }
-    match (result, previous_session) {
-        (Ok((encrypted_wallet, wallet)), Some(_)) => {
-            session::store(account_name, encrypted_wallet, wallet);
-            Ok(())
-        },
-        (Ok(_), None) => Ok(()),
-        (Err(e), Some(previous_session)) => {
-            session::restore(account_name, previous_session);
-            Err(e)
-        },
-        (Err(e), None) => Err(e),
+    let (previous_row, encrypted_wallet, wallet) = result?;
+    if session::has_session(&previous_row) {
+        session::store(account_name, encrypted_wallet, wallet);
     }
+    Ok(())
 }
 
 fn rewrite_encrypted_wallet(
@@ -607,7 +602,7 @@ fn rewrite_encrypted_wallet(
     account_name: &str,
     old_password: &str,
     new_password: &str,
-) -> WalletDbResult<(Vec<u8>, WalletType)> {
+) -> WalletDbResult<(AccountRow, Vec<u8>, WalletType)> {
     // The encrypted wallet is the only field `encrypt_data` writes. Read and rewrite it under
     // the write lock so a concurrent change cannot be lost.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -650,7 +645,7 @@ fn rewrite_encrypted_wallet(
         Err(e) => warn!(error:% = e; "DB: WAL checkpoint after passphrase change failed"),
     }
 
-    Ok((encrypted_data.ciphertext, wallet))
+    Ok((account, encrypted_data.ciphertext, wallet))
 }
 
 #[cfg(test)]
