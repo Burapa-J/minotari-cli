@@ -45,7 +45,7 @@ use crate::transactions::fee_estimator::one_sided_output_sizes;
 use crate::transactions::fund_locker::validate_fee_per_gram;
 use crate::transactions::idempotency::{IdempotencyBinding, IdempotencyOperation, RequestFingerprint};
 use crate::transactions::input_selector::map_change_required_error;
-use crate::{api::types::LockFundsResult, db::AccountRow};
+use crate::{db::AccountRow, transactions::fund_locker::LockFundsResult};
 use anyhow::anyhow;
 use log::info;
 use tari_common::configuration::Network;

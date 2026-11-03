@@ -12,7 +12,6 @@ use tari_common_types::{
 };
 use tari_transaction_components::MicroMinotari;
 use tari_transaction_components::key_manager::{KeyManager, wallet_types::WalletType};
-use utoipa::ToSchema;
 
 use crate::db::error::{WalletDbError, WalletDbResult};
 use crate::db::outputs::get_output_totals_for_account;
@@ -24,9 +23,11 @@ use crate::utils::{
 };
 use crate::{db::balance_changes::get_balance_aggregates_for_account, utils::crypto::FullEncryptedData};
 use tari_utilities::hex::Hex;
+#[cfg(feature = "utoipa")]
 use utoipa::openapi::{Object, Schema, Type};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "utoipa")]
 pub fn micro_minotari_schema() -> Schema {
     Schema::Object(
         Object::builder()
@@ -304,29 +305,30 @@ impl AccountRow {
     }
 }
 
-#[derive(Debug, Clone, ToSchema, Serialize)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AccountBalance {
     /// The total balance of the account (Total Credits - Total Debits).
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub total: MicroMinotari,
     /// The portion of the total balance that is currently spendable.
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub available: MicroMinotari,
     /// The portion of the balance that is locked.
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub locked: MicroMinotari,
     /// The amount from incoming transactions that have not yet been confirmed.
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub unconfirmed: MicroMinotari,
     /// The portion of the balance that is mined but still subject to an output
     /// maturity (e.g. coinbase rewards) and therefore not yet spendable.
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub immature: MicroMinotari,
     /// The total sum of all incoming (credit) transactions.
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub total_credits: Option<MicroMinotari>,
     /// The total sum of all outgoing (debit) transactions.
-    #[schema(schema_with = micro_minotari_schema)]
+    #[cfg_attr(feature = "utoipa", schema(schema_with = micro_minotari_schema))]
     pub total_debits: Option<MicroMinotari>,
     /// The maximum blockchain height among all transactions for this account.
     ///

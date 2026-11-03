@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "minotari",
+    "minotari-wallet-core",
     "integration-tests",
     "minotari-scanning"
 ]

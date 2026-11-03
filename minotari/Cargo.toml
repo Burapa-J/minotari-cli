@@ -20,7 +20,6 @@ anyhow = "1.0.99"
 argon2 = { version = "0.6.0-rc.8", features = ["alloc"] }
 blake2 = "0.10"
 digest = "0.10"
-phc = "0.6.1"
 axum = { version = "0.8.6", features = ["default", "http2", "macros"] }
 chacha20poly1305 = { version = "0.11.0-rc.3", features = ["rand_core"] }
 chrono = "0.4.42"
@@ -30,24 +29,20 @@ dirs-next = "2"
 config = { version = "0.14.0", default-features = false, features = ["toml"] }
 hex = "0.4.3"
 hmac = "0.12.1"
-include_dir = "0.7.4"
-minotari-scanning = { workspace = true, features = [
-    "grpc",
-    "http",
-] }
+minotari-wallet-core = { path = "../minotari-wallet-core", version = "0.6.0", features = ["grpc", "utoipa"] }
 log = { version = "0.4.29", features = ["kv"] }
 log4rs = { version = "1.4.0", features = ["yaml_format", "console_appender", "file_appender", "log_kv"] }
-r2d2 = "0.8.10"
-r2d2_sqlite = "0.34.0"
 rand = "0.8"
-reqwest = { version = "0.12", features = ["json"] }
-reqwest-middleware = "0.4"
-reqwest-retry = "0.7"
+reqwest = { version = "0.12", default-features = false, features = [
+    "charset",
+    "http2",
+    "json",
+    "macos-system-configuration",
+    "rustls-tls",
+] }
 rusqlite = { version = "0.39", features = ["bundled", "chrono", "uuid", "serde_json"] }
-rusqlite_migration = { version = "2.5.0", features = ["from-directory"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_rusqlite = "0.42.0"
 serde_yaml = "0.9.34"
 sha2 = "0.10"
 subtle = "2.6"
@@ -65,7 +60,6 @@ tari_utilities = { workspace = true, features = ["std"] }
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-util = { version = "0.7.17", features = ["rt"] }
-url = "2.5"
 utoipa = "6.0.0"
 utoipa-swagger-ui = { version = "10.0.2", features = ["axum"] }
 uuid = { version = "1", features = ["v4"] }

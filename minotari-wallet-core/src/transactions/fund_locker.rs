@@ -32,11 +32,11 @@ use rusqlite::Connection;
 use std::sync::Mutex;
 use tari_common::configuration::Network;
 use tari_transaction_components::tari_amount::MicroMinotari;
+use tari_transaction_components::transaction_components::WalletOutput;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    api::types::{LockFundsResult, SendAllSkipped},
     db::{self, PendingTransactionRecord},
     log::mask_amount,
     models::PendingTransactionStatus,
@@ -45,6 +45,102 @@ use crate::{
         input_selector::InputSelector,
     },
 };
+
+/// Result of a successful fund locking operation.
+///
+/// This structure is returned by the `/accounts/{name}/lock_funds` endpoint
+/// and contains all the information needed to construct a transaction using
+/// the locked UTXOs.
+///
+/// # JSON Example
+///
+/// ```json
+/// {
+///   "utxos": [...],
+///   "requires_change_output": true,
+///   "total_value": 1500000,
+///   "fee_without_change": 250,
+///   "fee_with_change": 500
+/// }
+/// ```
+///
+/// # Usage
+///
+/// The locked UTXOs should be used as inputs for the transaction. If
+/// `requires_change_output` is `true`, a change output must be created
+/// to return excess funds. The appropriate fee (`fee_with_change` or
+/// `fee_without_change`) should be used based on whether a change output
+/// is included.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct LockFundsResult {
+    /// The UTXOs that have been locked for this transaction.
+    ///
+    /// These outputs are reserved and cannot be used by other transactions
+    /// until the lock expires or is released. Each UTXO contains the
+    /// cryptographic data needed to spend it.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Object>))]
+    pub utxos: Vec<WalletOutput>,
+
+    /// Indicates whether a change output is required.
+    ///
+    /// If `true`, the total value of locked UTXOs exceeds the requested
+    /// amount plus fees, and a change output should be created to return
+    /// the excess to the wallet.
+    pub requires_change_output: bool,
+
+    /// The total value of all locked UTXOs in MicroMinotari.
+    ///
+    /// This is the sum of the values of all UTXOs in the `utxos` field.
+    /// It will be greater than or equal to the requested amount plus the
+    /// applicable fee.
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub total_value: MicroMinotari,
+
+    /// The transaction fee if no change output is created.
+    ///
+    /// Use this fee when `requires_change_output` is `false`, or when
+    /// intentionally burning the excess as a donation to miners.
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub fee_without_change: MicroMinotari,
+
+    /// The transaction fee if a change output is included.
+    ///
+    /// This fee is higher than `fee_without_change` because the change
+    /// output adds to the transaction size. Use this fee when
+    /// `requires_change_output` is `true`.
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub fee_with_change: MicroMinotari,
+
+    /// The pending transaction holding these UTXOs. Not sent to clients.
+    #[serde(skip)]
+    pub reservation_id: String,
+
+    /// Whether this call took the reservation rather than replaying an
+    /// existing one. Only then may the caller release it when the send fails
+    /// (see `release_reservation`). Not sent to clients.
+    #[serde(skip)]
+    pub created_reservation: bool,
+
+    /// For a send-all reservation this call took, how many spendable outputs
+    /// it left behind. `None` for an exact send, and on a replay: the counts
+    /// are not stored, and recounting now could describe other outputs. Not
+    /// sent to clients as part of this type.
+    #[serde(skip)]
+    pub send_all_skipped: Option<SendAllSkipped>,
+}
+
+/// How many spendable outputs a send-all left behind: the `send_all` field of
+/// a send-all's `create_unsigned_transaction` response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct SendAllSkipped {
+    /// Outputs worth no more than they cost to spend; never worth spending.
+    pub skipped_dust: usize,
+    /// Outputs that did not fit one transaction (count, weight or bytes);
+    /// another send-all can sweep them.
+    pub skipped_over_cap: usize,
+}
 
 /// Upper bound, in seconds, on how long UTXOs may be locked (365 days).
 ///

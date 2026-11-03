@@ -57,3 +57,43 @@ jobs:
 
       - name: Check unused dependencies
         run: cargo machete
+
+  wallet-core:
+    name: Wallet core (http only, no server/CLI/OpenSSL deps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: ubuntu dependencies
+        run: |
+          sudo apt-get update
+          sudo bash scripts/install_ubuntu_dependencies.sh
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked -p minotari-wallet-core --no-default-features --features http
+
+      - name: Assert forbidden dependencies are absent
+        run: |
+          tree=$(cargo tree --locked -e normal -p minotari-wallet-core --no-default-features --features http --target all --prefix none)
+          # log4rs is a hard dependency of the upstream tari_common, so only a direct dependency is forbidden.
+          direct=$(cargo tree --locked -e normal -p minotari-wallet-core --no-default-features --features http --target all --prefix none --depth 1)
+          found=0
+          for crate in openssl-sys native-tls axum clap utoipa-swagger-ui tonic; do
+            if grep -q "^$crate v" <<< "$tree"; then
+              echo "::error::minotari-wallet-core depends on $crate"
+              cargo tree --locked -e normal -p minotari-wallet-core --no-default-features --features http --target all -i "$crate"
+              found=1
+            fi
+          done
+          if grep -q "^log4rs v" <<< "$direct"; then
+            echo "::error::minotari-wallet-core depends directly on log4rs"
+            found=1
+          fi
+          exit $found

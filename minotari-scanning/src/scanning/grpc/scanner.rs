@@ -16,6 +16,7 @@ use crate::{
     scanning::{BlockScanResult, InProgressScan, ScanConfig, TipInfo, interface::BlockchainScanner},
 };
 use async_trait::async_trait;
+use log::error;
 use minotari_app_grpc::tari_rpc;
 use primitive_types::U512;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -28,7 +29,6 @@ use tari_transaction_components::{
 use tokio::sync::mpsc;
 use tonic::{Request, transport::Channel};
 use tracing::debug;
-use tracing::log::error;
 
 /// Hard upper bound on the number of block heights requested in a single `get_blocks` call.
 ///

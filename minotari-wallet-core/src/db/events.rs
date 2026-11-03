@@ -2,7 +2,6 @@ use chrono::NaiveDateTime;
 use log::{debug, info};
 use rusqlite::{Connection, named_params};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::WalletEvent;
 use crate::db::error::WalletDbResult;
@@ -11,7 +10,8 @@ use crate::db::error::WalletDbResult;
 ///
 /// This struct is used for deserializing wallet events from the database
 /// and serializing them for API responses.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DbWalletEvent {
     /// Unique identifier for this event
     pub id: i64,
@@ -24,7 +24,7 @@ pub struct DbWalletEvent {
     /// JSON data containing event-specific details
     pub data_json: Option<String>,
     /// Timestamp when the event was created
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub created_at: NaiveDateTime,
 }
 

@@ -1182,9 +1182,11 @@ mod tests {
     /// is caught here.
     #[test]
     fn every_transaction_builder_site_requires_change_and_maps_the_refusal() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = manifest_dir.join("src");
         let this_file = src.join("transactions").join("input_selector.rs");
-        let mut dirs = vec![src];
+        // The CLI's commands build transactions too.
+        let mut dirs = vec![src, manifest_dir.join("../minotari/src")];
         let mut builder_sites = 0;
         let mut refusing_calls = 0;
         while let Some(dir) = dirs.pop() {

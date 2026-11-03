@@ -1,0 +1,60 @@
+[package]
+name = "minotari-wallet-core"
+description = "Minotari view-only wallet library: database, scanning, transactions and the wallet HTTP client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[features]
+default = ["http"]
+grpc = ["minotari-scanning/grpc"]
+http = ["minotari-scanning/http"]
+# OpenAPI schemas for the daemon's API docs.
+utoipa = ["dep:utoipa"]
+
+[dependencies]
+anyhow = "1.0.99"
+argon2 = { version = "0.6.0-rc.8", features = ["alloc"] }
+phc = "0.6.1"
+chacha20poly1305 = { version = "0.11.0-rc.3", features = ["rand_core"] }
+chrono = "0.4.42"
+zeroize = "1.8"
+hex = "0.4.3"
+include_dir = "0.7.4"
+minotari-scanning = { workspace = true, default-features = false }
+log = { version = "0.4.29", features = ["kv"] }
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.34.0"
+reqwest = { version = "0.12", default-features = false, features = [
+    "charset",
+    "http2",
+    "json",
+    "macos-system-configuration",
+    "rustls-tls",
+] }
+reqwest-middleware = { version = "0.4", default-features = false }
+reqwest-retry = { version = "0.7", default-features = false }
+rusqlite = { version = "0.39", features = ["bundled", "chrono", "uuid", "serde_json"] }
+rusqlite_migration = { version = "2.5.0", features = ["from-directory"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_rusqlite = "0.42.0"
+tari_common = { workspace = true }
+tari_common_types = { workspace = true }
+tari_crypto = { workspace = true, features = ["borsh"] }
+tari_script = { workspace = true }
+tari_transaction_components = { workspace = true }
+tari_utilities = { workspace = true, features = ["std"] }
+thiserror = "2.0.17"
+tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.17", features = ["rt"] }
+url = "2.5"
+utoipa = { version = "6.0.0", optional = true }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.24.0"
+tokio = { version = "1.47.1", features = ["full", "test-util"] }
+wiremock = "0.6.5"

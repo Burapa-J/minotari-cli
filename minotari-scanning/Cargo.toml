@@ -52,8 +52,12 @@ futures = "0.3"
 # === Platform-Specific Dependencies ===
 # Native targets (non-WASM) - Full reqwest with all features
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { version = "0.12.22", features = [
+reqwest = { version = "0.12.22", default-features = false, features = [
+    "charset",
+    "http2",
     "json",
+    "macos-system-configuration",
+    "rustls-tls",
     "stream",
     "gzip",
 ], optional = true }

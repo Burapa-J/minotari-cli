@@ -1441,10 +1441,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{
-        db::{create_account, get_account_by_name, init_db, insert_scanned_tip_block},
-        tasks::unlocker::TransactionUnlocker,
-    };
+    use crate::db::{create_account, get_account_by_name, init_db, insert_scanned_tip_block};
 
     /// A send must make do with one database connection.
     ///
@@ -2097,7 +2094,7 @@ mod tests {
 
         for tx in listed {
             assert!(
-                !TransactionUnlocker::expire_and_unlock(&connection, &tx.id).expect("unlock pass"),
+                !db::expire_and_unlock_pending_transaction(&connection, &tx.id).expect("unlock pass"),
                 "the unlocker must decline a reservation that is no longer pending",
             );
         }

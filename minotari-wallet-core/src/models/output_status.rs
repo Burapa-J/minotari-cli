@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum OutputStatus {
     Unspent,
     Locked,

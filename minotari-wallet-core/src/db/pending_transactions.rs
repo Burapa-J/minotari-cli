@@ -4,10 +4,10 @@ use crate::db::error::{WalletDbError, WalletDbResult};
 use crate::log::mask_amount;
 use crate::transactions::idempotency::IdempotencyBinding;
 use crate::{
-    api::types::LockFundsResult,
     db::completed_transactions::CompletedTransactionStatus,
     db::outputs::{fetch_outputs_by_lock_request_id, unlock_outputs_for_request},
     models::PendingTransactionStatus,
+    transactions::fund_locker::LockFundsResult,
 };
 use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
