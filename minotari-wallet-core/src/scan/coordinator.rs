@@ -416,6 +416,7 @@ impl ScanCoordinator {
                 .map_err(|e| ScanError::Intermittent(e.to_string()))?;
             let mut is_batch_empty = false;
             let mut max_new_height_in_batch = 0;
+            let mut scanned_in_pass = false;
             loop {
                 // Cancelling must not wait for a slow or retrying block download.
                 let Some(response) = unless_cancelled(&cancel_token, utxo_stream.recv()).await else {
@@ -450,6 +451,7 @@ impl ScanCoordinator {
                 }
 
                 max_new_height_in_batch = global_next_block;
+                scanned_in_pass = true;
 
                 let shared_blocks = Arc::new(scanned_blocks);
 
@@ -575,6 +577,11 @@ impl ScanCoordinator {
                             all_events,
                         )
                         .await;
+                }
+                // The pass stopped below an account further ahead: scan on from
+                // there. Blocks were scanned, so the lagging cursors moved up.
+                if next_horizon_height.is_some() && scanned_in_pass {
+                    continue;
                 }
                 // Settle pending transactions before reporting completion, and
                 // before `wait_for_next_poll_cycle` moves the cursor back a block.
@@ -2413,6 +2420,44 @@ mod tests {
         })
         .expect("budget exhausted");
         assert!(updated < exhausted);
+    }
+
+    #[tokio::test]
+    async fn a_full_scan_of_accounts_at_different_heights_takes_both_to_the_tip() {
+        let mut setup = setup(1500, 1600).await;
+        let accounts = {
+            let conn = setup.pool.get().expect("conn");
+            let wallet = WalletType::SeedWords(SeedWordsWallet::construct_new(CipherSeed::random()).unwrap());
+            create_account(&conn, "second", &wallet, "password").unwrap();
+            let second = get_account_by_name(&conn, "second").unwrap().unwrap();
+            insert_scanned_tip_block(&conn, second.id, 1550, &block_hash(1550)).expect("tip");
+            vec![get_account_by_name(&conn, "default").unwrap().unwrap(), second]
+        };
+        let account_ids: Vec<i64> = accounts.iter().map(|account| account.id).collect();
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(accounts, "password", ScanMode::Full, 0, None)
+            .await
+            .expect("scan");
+        assert!(!more_blocks);
+        let events = drain(&mut setup.events);
+
+        assert_eq!(terminal_count(&events), 2, "one terminal event per account");
+        for account_id in account_ids {
+            let completed_at_tip = events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        ProcessingEvent::ScanStatus(ScanStatusEvent::Completed { account_id: id, final_height: 1600, .. })
+                            if *id == account_id
+                    )
+                })
+                .count();
+            assert_eq!(completed_at_tip, 1, "account {account_id} completes at the tip");
+            assert_eq!(max_tip_height(&setup.pool, account_id), 1600);
+        }
     }
 
     #[tokio::test]
