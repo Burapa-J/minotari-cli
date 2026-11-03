@@ -312,7 +312,7 @@ impl Scanner {
         let pool = db::init_db(self.database_file.clone())?;
         let conn = pool.get().map_err(|e| ScanError::DbError(e.into()))?;
 
-        let accounts = db::get_accounts(&conn, self.account_name.as_deref())?;
+        let accounts = accounts_to_scan(&conn, self.account_name.as_deref())?;
         let coordinator = ScanCoordinator::new(
             pool,
             self.base_url,
@@ -451,7 +451,7 @@ impl Scanner {
         let pool = db::init_db(self.database_file.clone())?;
         let conn = pool.get().map_err(|e| ScanError::DbError(e.into()))?;
 
-        let accounts = db::get_accounts(&conn, self.account_name.as_deref())?;
+        let accounts = accounts_to_scan(&conn, self.account_name.as_deref())?;
         let coordinator = ScanCoordinator::new(
             pool,
             self.base_url,
@@ -475,5 +475,49 @@ impl Scanner {
                 self.cancel_token,
             )
             .await
+    }
+}
+
+/// The accounts a scan covers. A named account that does not exist is an
+/// error, so a scan never ends without a terminal event for the account asked for.
+fn accounts_to_scan(conn: &rusqlite::Connection, name: Option<&str>) -> Result<Vec<db::AccountRow>, ScanError> {
+    let accounts = db::get_accounts(conn, name)?;
+    if let Some(name) = name
+        && accounts.is_empty()
+    {
+        return Err(ScanError::DbError(db::WalletDbError::InvalidInput(format!(
+            "Account '{name}' not found"
+        ))));
+    }
+    Ok(accounts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn scanning_an_unknown_account_is_an_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let database_file = dir.path().join("wallet.db");
+        db::init_db(database_file.clone()).expect("init db");
+
+        let scanner =
+            || Scanner::new("password", "http://127.0.0.1:1", database_file.clone(), 10, 3).account("missing");
+        let run = scanner().run().await;
+        assert!(matches!(
+            run,
+            Err(ScanError::DbError(db::WalletDbError::InvalidInput(_)))
+        ));
+        let (_, scan) = scanner().run_with_events();
+        assert!(matches!(
+            scan.await,
+            Err(ScanError::DbError(db::WalletDbError::InvalidInput(_)))
+        ));
+        let backfill = scanner().run_backfill(100).await;
+        assert!(matches!(
+            backfill,
+            Err(ScanError::DbError(db::WalletDbError::InvalidInput(_)))
+        ));
     }
 }

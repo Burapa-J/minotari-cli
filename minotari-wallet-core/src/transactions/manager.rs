@@ -116,7 +116,9 @@ use crate::{
         },
         fee_estimator::{estimated_output_size_for_recipients, one_sided_output_sizes},
         fund_locker::{check_replay_allowed, lock_expiry_at, validate_fee_per_gram},
-        idempotency::{IdempotencyBinding, IdempotencyConflict, IdempotencyOperation, RequestFingerprint},
+        idempotency::{
+            IdempotencyBinding, IdempotencyConflict, IdempotencyOperation, RequestFingerprint, loggable_error,
+        },
         input_selector::{InputSelector, UtxoSelection, map_change_required_error},
         one_sided_transaction::{Recipient, check_recipient_networks, total_recipient_amount},
     },
@@ -792,7 +794,7 @@ impl TransactionSender {
                 Ok(res)
             },
             Err(e) => {
-                warn!(target: "audit", error:% = e; "Transaction creation failed");
+                warn!(target: "audit", error:% = loggable_error(&e); "Transaction creation failed");
                 // Only tear down a reservation this send actually took. A replay
                 // was handed someone else's, and that someone may still be
                 // building an unsigned transaction over the very UTXOs this
@@ -875,7 +877,7 @@ impl TransactionSender {
 
         self.check_if_transaction_expired(&connection, processed_transaction)
             .inspect_err(|e| {
-                warn!(target: "audit", error:% = e; "Transaction finalization preparation failed");
+                warn!(target: "audit", error:% = loggable_error(e); "Transaction finalization preparation failed");
                 self.release_unclaimed_reservation(&connection, processed_transaction);
             })?;
 
@@ -911,7 +913,7 @@ impl TransactionSender {
             .map_err(|e| anyhow!("Invalid base node URL: {}", e))
             .and_then(WalletHttpClient::new)
             .inspect_err(|e| {
-                warn!(target: "audit", error:% = e; "Transaction finalization preparation failed");
+                warn!(target: "audit", error:% = loggable_error(e); "Transaction finalization preparation failed");
                 self.release_unclaimed_reservation(&connection, processed_transaction);
             })?;
 
@@ -971,7 +973,7 @@ impl TransactionSender {
         // reservation is as it was (`PENDING` unless another request claimed or
         // released it), and is released like any failure before the claim.
         record_result.inspect_err(|e| {
-            warn!(target: "audit", error:% = e; "Transaction finalization preparation failed");
+            warn!(target: "audit", error:% = loggable_error(e); "Transaction finalization preparation failed");
             self.release_unclaimed_reservation(&connection, processed_transaction);
         })?;
 
@@ -1123,9 +1125,10 @@ impl TransactionSender {
         };
         warn!(
             target: "audit",
-            error:% = conflict;
+            kind = conflict.kind();
             "Refusing to broadcast a reservation this request does not hold"
         );
+        trace!(target: "audit", error:% = conflict; "Reservation conflict");
         Err(conflict.into())
     }
 

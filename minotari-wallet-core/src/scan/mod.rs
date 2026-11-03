@@ -40,7 +40,9 @@
 //! # Terminal Events
 //!
 //! Every run that returns `Ok` ends with exactly one terminal
-//! [`ScanStatusEvent`] per account:
+//! [`ScanStatusEvent`] per scanned account. A scanner limited to an account
+//! name that does not exist returns an error instead; one with no account
+//! filter on a wallet without accounts returns `Ok` with no events.
 //!
 //! - `Completed { final_height, .. }`: the scan reached the chain tip (Full,
 //!   Partial, FastSync) or its end height (backfill).
