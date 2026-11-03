@@ -691,11 +691,7 @@ where
         let thread_count = self.thread_count;
         let processing_scanner = self.clone();
         tokio::spawn(async move {
-            let processing_pool = match rayon::ThreadPoolBuilder::new()
-                .num_threads(thread_count)
-                .build()
-                .map_err(|e| WalletError::ConfigurationError(format!("Failed to build thread pool: {e}")))
-            {
+            let processing_pool = match processing_pool(thread_count) {
                 Ok(pool) => pool,
                 Err(e) => {
                     let _unused = send_download.send(Err(e)).await.inspect_err(|e| {
@@ -958,5 +954,24 @@ where
                 },
             }
         }
+    }
+}
+
+/// The rayon pool that detects wallet outputs, with `thread_count` threads.
+fn processing_pool(thread_count: usize) -> WalletResult<rayon::ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build()
+        .map_err(|e| WalletError::ConfigurationError(format!("Failed to build thread pool: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_processing_thread_gives_a_pool_of_one_thread() {
+        let pool = processing_pool(1).expect("pool");
+        assert_eq!(pool.current_num_threads(), 1);
     }
 }

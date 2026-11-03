@@ -37,6 +37,29 @@
 //! - [`ProcessingEvent::TransactionsReady`] - Newly detected transactions
 //! - [`ProcessingEvent::ReorgDetected`] - Chain reorganization detected and handled
 //!
+//! # Terminal Events
+//!
+//! Every run that returns `Ok` ends with exactly one terminal
+//! [`ScanStatusEvent`] per account:
+//!
+//! - `Completed { final_height, .. }`: the scan reached the chain tip (Full,
+//!   Partial, FastSync) or its end height (backfill).
+//! - `Cancelled { last_scanned_height, .. }`: the cancel token fired.
+//! - `BudgetExhausted { last_scanned_height, tip_height, .. }`: the
+//!   [`Scanner::deadline`] passed or `ScanMode::Partial { max_blocks }` were
+//!   scanned before the tip. The two can be combined; the first limit reached
+//!   stops the scan.
+//!
+//! A run that returns an error sends none. The next run resumes after
+//! `last_scanned_height`.
+//!
+//! # Resource Controls
+//!
+//! [`Scanner::processing_threads`] sizes the output detection pool,
+//! [`Scanner::event_buffer`] bounds the event channel (the scan waits for a
+//! slow consumer instead of buffering), and [`Scanner::deadline`] caps the
+//! time. Separate `Scanner`s can scan different accounts at the same time.
+//!
 //! # Continuous Mode Event Contract
 //!
 //! Events are per account (`account_id`). A Continuous scan repeats one cycle
@@ -49,8 +72,9 @@
 //!    is never below `current_height`.
 //! 2. Caught up: post-scan `TransactionsUpdated` / `TransactionsReady`
 //!    (`is_initial_sync: false`) for confirmation and status changes, then
-//!    `Completed { final_height, .. }`, then `Waiting { resume_in }` (the poll
-//!    interval). The scanner is idle until the next poll.
+//!    `Waiting { resume_in }` (the poll interval, cut short by a deadline).
+//!    The scanner is idle until the next poll. A deadline that has passed
+//!    ends the scan here with `Completed` instead.
 //! 3. After each poll, and every `reorg_check_interval` blocks while scanning,
 //!    the stored tip blocks are checked against the chain. A reorg sends
 //!    `ReorgDetected`: blocks from `reorg_from_height` were rolled back, the
@@ -67,8 +91,8 @@
 //! `Started` is not sent. Cancelling the token stops the scan without waiting
 //! on the node: the startup reorg checks and birthday lookups, block
 //! downloads, tip reads, reorg checks and the poll sleep are all interrupted.
-//! It sends `Paused { reason: Cancelled }` for every account prepared so far
-//! (none if it is cancelled during startup) and returns `more_blocks == true`.
+//! It sends `Cancelled` for every account (at the last block stored for it if
+//! it is cancelled during startup) and returns `more_blocks == true`.
 //! The one wait that is not interrupted is the end-of-pass transaction monitor,
 //! so its updates are always reported; a cancel that arrives first skips it,
 //! and its node requests are bounded by the HTTP client's timeout and retries.
@@ -76,7 +100,7 @@
 //! a single database transaction, so a cancelled scan leaves the database at
 //! the last fully processed batch. The scanner's background download tasks
 //! stop as soon as the scan drops its stream. Dropping the scan future stops it
-//! the same way, without the `Paused` event.
+//! the same way, without the `Cancelled` event.
 //!
 //! # Example Usage
 //!
@@ -88,7 +112,8 @@
 //! let scanner = Scanner::new("password", "http://localhost:18142", "wallet.db", 100)
 //!     .account("default")
 //!     .mode(ScanMode::Continuous { poll_interval: Duration::from_secs(30) })
-//!     .processing_threads(4);
+//!     .processing_threads(1)
+//!     .event_buffer(Some(256));
 //!
 //! // Run with event channel for real-time updates
 //! let (event_rx, scan_future) = scanner.run_with_events();

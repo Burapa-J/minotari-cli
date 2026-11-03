@@ -1,4 +1,4 @@
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use rusqlite::{Connection, named_params};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::from_rows;
@@ -43,7 +43,7 @@ pub fn create_account(
     wallet: &WalletType,
     password: &str,
 ) -> WalletDbResult<()> {
-    info!(
+    trace!(
         target: "audit",
         account = friendly_name;
         "DB: Creating new account"
@@ -93,7 +93,7 @@ pub fn create_account(
 }
 
 pub fn get_account_by_name(conn: &Connection, friendly_name: &str) -> WalletDbResult<Option<AccountRow>> {
-    debug!(
+    trace!(
         account = friendly_name;
         "DB: Fetching account by name"
     );
@@ -120,7 +120,7 @@ pub fn get_account_by_name(conn: &Connection, friendly_name: &str) -> WalletDbRe
 
 pub fn get_accounts(conn: &Connection, friendly_name: Option<&str>) -> WalletDbResult<Vec<AccountRow>> {
     if let Some(name) = friendly_name {
-        debug!(
+        trace!(
             account = name;
             "DB: Listing accounts with filter"
         );
@@ -274,7 +274,6 @@ impl AccountRow {
         if expected != self.fingerprint {
             warn!(
                 target: "audit",
-                account = &*self.friendly_name;
                 "DB: Wallet fingerprint mismatch — stored key material does not belong to this account"
             );
             return Err(WalletDbError::DecryptionFailed(format!(
@@ -471,7 +470,7 @@ fn get_balance_in_snapshot(conn: &Connection, account_id: i64) -> WalletDbResult
 /// Deletes the account row and its data. Does not touch its key session; use
 /// [`crate::utils::delete_wallet::delete_wallet`], which also locks it.
 pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
-    info!(
+    trace!(
         target: "audit",
         account = friendly_name;
         "DB: Deleting account and all associated data"
@@ -527,7 +526,7 @@ pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDb
         )));
     }
 
-    info!(target: "audit", account = friendly_name; "Account successfully deleted");
+    trace!(target: "audit", account = friendly_name; "Account successfully deleted");
 
     Ok(())
 }
@@ -594,7 +593,7 @@ pub fn change_passphrase(
     old_password: &str,
     new_password: &str,
 ) -> WalletDbResult<()> {
-    info!(
+    trace!(
         target: "audit",
         account = account_name;
         "DB: Changing account passphrase"
@@ -654,7 +653,7 @@ fn rewrite_encrypted_wallet(
     )?;
     tx.commit()?;
 
-    info!(
+    trace!(
         target: "audit",
         account = account_name;
         "DB: Account passphrase changed"

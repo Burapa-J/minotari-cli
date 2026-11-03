@@ -5,7 +5,7 @@
 //! manage confirmation status, and emit events for each processed block.
 
 use chrono::{DateTime, Utc};
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use minotari_scanning::BlockScanResult;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -621,7 +621,7 @@ impl<E: EventSender> BlockProcessor<E> {
         height: u64,
         block_hash: &FixedHash,
     ) -> Result<(i64, WalletEvent), BlockProcessorError> {
-        info!(
+        trace!(
             target: "audit",
             id = completed_tx_id.to_string().as_str(),
             height = height;
@@ -710,7 +710,7 @@ impl<E: EventSender> BlockProcessor<E> {
                 continue;
             };
 
-            info!(
+            trace!(
                 target: "audit",
                 account_id = account_id,
                 tx_id:% = tx_id,
@@ -833,7 +833,6 @@ impl<E: EventSender> BlockProcessor<E> {
                 Err(e) => {
                     warn!(
                         target: "audit",
-                        id = completed.id.to_string().as_str(),
                         error:% = e;
                         "Cannot decode stored transaction; not matching it against this block"
                     );
@@ -862,7 +861,7 @@ impl<E: EventSender> BlockProcessor<E> {
             let block_height = send_block.height as i64;
 
             if all_inputs_in_block && change_in_block {
-                info!(
+                trace!(
                     target: "audit",
                     id = completed.id.to_string().as_str(),
                     height = send_block.height;
@@ -894,7 +893,7 @@ impl<E: EventSender> BlockProcessor<E> {
                 generated_events.push((event_id, event));
 
                 if was_rejected {
-                    info!(
+                    trace!(
                         target: "audit",
                         id = completed.id.to_string().as_str();
                         "Transaction the monitor rejected was mined after all"
@@ -906,7 +905,6 @@ impl<E: EventSender> BlockProcessor<E> {
             if !block_is_complete {
                 warn!(
                     target: "audit",
-                    id = completed.id.to_string().as_str(),
                     height = send_block.height,
                     all_inputs_in_block = all_inputs_in_block,
                     change_in_block = change_in_block;
@@ -947,7 +945,6 @@ impl<E: EventSender> BlockProcessor<E> {
             let reason = "inputs spent by a different transaction".to_string();
             warn!(
                 target: "audit",
-                id = completed.id.to_string().as_str(),
                 height = send_block.height,
                 all_inputs_in_block = all_inputs_in_block,
                 change_in_block = change_in_block;
@@ -1076,7 +1073,7 @@ impl<E: EventSender> BlockProcessor<E> {
             db::get_unconfirmed_outputs(tx, account_id, block.height, self.required_confirmations)?;
 
         for unconfirmed_output in unconfirmed_outputs {
-            info!(
+            trace!(
                 target: "audit",
                 account_id = account_id,
                 output_hash = &*mask_string(&hex::encode(unconfirmed_output.output_hash)),
@@ -1110,7 +1107,7 @@ impl<E: EventSender> BlockProcessor<E> {
             if unconfirmed_output.is_burn != 0 {
                 match get_burn_proof_by_output_hash(tx, &unconfirmed_output.output_hash) {
                     Ok(Some(_proof)) => {
-                        info!(
+                        trace!(
                             target: "audit",
                             output_hash = &*mask_string(&hex::encode(unconfirmed_output.output_hash));
                             "Burn output confirmed — daemon will fetch burn output proof"
@@ -1121,7 +1118,6 @@ impl<E: EventSender> BlockProcessor<E> {
                     },
                     Err(e) => {
                         error!(
-                            output_hash = &*mask_string(&hex::encode(unconfirmed_output.output_hash)),
                             error:% = e;
                             "Failed to look up burn proof for confirmed burn output"
                         );

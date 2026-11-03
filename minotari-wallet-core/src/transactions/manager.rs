@@ -75,7 +75,7 @@
 
 use anyhow::anyhow;
 use chrono::Utc;
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
@@ -869,7 +869,7 @@ impl TransactionSender {
         let processed_transaction = &self.processed_transactions;
         let account_id = self.account.id;
 
-        info!(
+        trace!(
             target: "audit",
             id = processed_transaction.id();
             "Finalizing and broadcasting transaction"
@@ -993,7 +993,6 @@ impl TransactionSender {
         if let Err(e) = persist_first_displayed_transaction(&mut connection, &mut displayed_transaction) {
             warn!(
                 target: "audit",
-                id = completed_tx_id.to_string().as_str(),
                 error:% = e;
                 "Could not reconcile the displayed transaction for a recorded send; the scan will add it"
             );
@@ -1126,7 +1125,6 @@ impl TransactionSender {
         };
         warn!(
             target: "audit",
-            id = processed_transaction.id(),
             error:% = conflict;
             "Refusing to broadcast a reservation this request does not hold"
         );
@@ -1151,7 +1149,6 @@ impl TransactionSender {
         if !processed_transaction.owns_reservation() {
             warn!(
                 target: "audit",
-                id = processed_transaction.id();
                 "Leaving a replayed reservation locked for the request that created it"
             );
             return;
@@ -1161,7 +1158,6 @@ impl TransactionSender {
             Ok(true) => {},
             Ok(false) => warn!(
                 target: "audit",
-                id = processed_transaction.id();
                 "Leaving a reservation that is no longer pending to whoever claimed it"
             ),
             Err(e) => {
@@ -1226,7 +1222,7 @@ pub fn record_first_broadcast(
 ) -> FirstBroadcast {
     let (mut first_broadcast, recorded) = match response {
         Ok(submission) if submission.accepted => {
-            info!(
+            trace!(
                 target: "audit",
                 id = completed_tx_id.to_string().as_str();
                 "Transaction accepted by network"
@@ -1238,7 +1234,7 @@ pub fn record_first_broadcast(
             (FirstBroadcast::accepted(), recorded)
         },
         Ok(submission) if submission.rejection_reason == TxSubmissionRejectionReason::AlreadyMined => {
-            info!(
+            trace!(
                 target: "audit",
                 id = completed_tx_id.to_string().as_str();
                 "Transaction already mined by network"
@@ -1250,7 +1246,6 @@ pub fn record_first_broadcast(
                 crate::log::sanitize_node_text(&format!("Transaction not accepted: {}", submission.rejection_reason));
             warn!(
                 target: "audit",
-                id = completed_tx_id.to_string().as_str(),
                 reason:% = reason;
                 "Transaction not accepted by the network yet; it is recorded and will be rebroadcast"
             );
@@ -1263,7 +1258,6 @@ pub fn record_first_broadcast(
             let reason = crate::log::sanitize_node_text(&e.to_string());
             warn!(
                 target: "audit",
-                id = completed_tx_id.to_string().as_str(),
                 reason:% = reason;
                 "Transaction submission failed; it is recorded and will be rebroadcast"
             );
@@ -1285,8 +1279,7 @@ pub fn record_first_broadcast(
                         && send.last_rejected_reason.as_deref()
                             == Some(crate::transactions::abandon::ABANDONED_REASON) =>
                 {
-                    warn!(target: "audit", id = completed_tx_id.to_string().as_str();
-                        "The node accepted a send after the user abandoned it");
+                    warn!(target: "audit", "The node accepted a send after the user abandoned it");
                     first_broadcast.accepted_after_abandon = true;
                 },
                 _ => first_broadcast.local_record_lagging = true,
@@ -1296,7 +1289,6 @@ pub fn record_first_broadcast(
         Some(Err(e)) => {
             warn!(
                 target: "audit",
-                id = completed_tx_id.to_string().as_str(),
                 error:% = e;
                 "Could not record the node's answer for a recorded send; the monitor and scan will catch up"
             );
@@ -1305,7 +1297,6 @@ pub fn record_first_broadcast(
         None => {
             warn!(
                 target: "audit",
-                id = completed_tx_id.to_string().as_str();
                 "No database connection to record the node's answer for a recorded send; the monitor and scan will \
                  catch up"
             );
