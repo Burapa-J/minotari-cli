@@ -5,8 +5,10 @@
 //! passphrase nor any Argon2 work. [`lock`] stops new operations from using the session and drops
 //! the cached keys.
 //!
-//! Sessions are keyed by account name and tied to the ciphertext they were decrypted from, so a
-//! session never applies to a different row (another database, or a re-encrypted wallet).
+//! Sessions are keyed by account name and tied to the stored key material they were decrypted
+//! from (ciphertext, nonce, salt and fingerprint), so a re-encrypted wallet or a different
+//! account in another database never uses them. A byte-identical copy of the row in another
+//! database does share the session; it holds the same keys.
 //!
 //! Sessions have no expiry: the host decides their lifetime and must lock on close or background.
 //!
@@ -25,27 +27,57 @@ use crate::db::{AccountRow, WalletDbError, WalletDbResult, get_account_by_name};
 /// An account's decrypted keys. Its secret keys and cipher seed zeroize themselves on drop.
 pub struct UnlockedAccount {
     encrypted_wallet: Vec<u8>,
+    cipher_nonce: Vec<u8>,
+    salt: Vec<u8>,
+    fingerprint: Vec<u8>,
     wallet: WalletType,
 }
 
 static SESSIONS: LazyLock<RwLock<HashMap<String, Arc<UnlockedAccount>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-// Held by every change to the session map. `unlock` takes it only to store, after its Argon2
+// Held by every change to the session map. `unlock` takes it only briefly, around its Argon2
 // work; passphrase changes, deletes and renames hold it throughout. Key paths never wait on it.
 static CHANGES: LazyLock<Mutex<LockCounts>> = LazyLock::new(|| Mutex::new(LockCounts::default()));
 
-/// How many times each account, and all accounts, have been locked, so an unlock that was in
-/// flight during a lock does not store.
+/// Locks and account changes seen while unlocks are in flight, so such an unlock does not store.
+/// Per-name entries exist only while an unlock of that name is running.
 #[derive(Default)]
 pub(crate) struct LockCounts {
     all: u64,
-    by_name: HashMap<String, u64>,
+    unlocking: HashMap<String, Unlocking>,
+}
+
+#[derive(Default)]
+struct Unlocking {
+    in_flight: u64,
+    locks: u64,
 }
 
 impl LockCounts {
-    fn for_name(&self, account_name: &str) -> (u64, u64) {
-        (self.all, self.by_name.get(account_name).copied().unwrap_or(0))
+    fn start_unlock(&mut self, account_name: &str) -> (u64, u64) {
+        let entry = self.unlocking.entry(account_name.to_string()).or_default();
+        entry.in_flight = entry.in_flight.wrapping_add(1);
+        (self.all, entry.locks)
+    }
+
+    fn finish_unlock(&mut self, account_name: &str) -> (u64, u64) {
+        let Some(entry) = self.unlocking.get_mut(account_name) else {
+            return (self.all, 0);
+        };
+        let locks = entry.locks;
+        entry.in_flight = entry.in_flight.saturating_sub(1);
+        if entry.in_flight == 0 {
+            self.unlocking.remove(account_name);
+        }
+        (self.all, locks)
+    }
+
+    /// Makes any unlock of `account_name` now in flight fail instead of storing.
+    pub(crate) fn record_lock(&mut self, account_name: &str) {
+        if let Some(entry) = self.unlocking.get_mut(account_name) {
+            entry.locks = entry.locks.wrapping_add(1);
+        }
     }
 }
 
@@ -58,13 +90,38 @@ impl LockCounts {
 /// [`WalletDbError::NotUnlocked`] and stores nothing if a lock or a change to the account ran
 /// while it was unlocking.
 pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> WalletDbResult<()> {
-    let locks_before = changes_guard().for_name(account_name);
-    let account = get_account_by_name(conn, account_name)?
-        .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", account_name)))?;
+    let started = changes_guard().start_unlock(account_name);
+    let prepared = decrypt_for_unlock(conn, account_name, passphrase);
+
+    let mut changes = changes_guard();
+    let interrupted = changes.finish_unlock(account_name) != started;
+    let Some((account, wallet)) = prepared? else {
+        return Ok(());
+    };
     if session_for(&account).is_some() {
         return Ok(());
     }
+    let current = get_account_by_name(conn, account_name)?;
+    let unchanged = current.is_some_and(|current| same_key_material(&current, &account));
+    if interrupted || !unchanged {
+        return Err(WalletDbError::NotUnlocked(account_name.to_string()));
+    }
+    store(&account, wallet);
+    info!(target: "audit", account = account_name; "Key session unlocked");
+    Ok(())
+}
 
+/// The account row and its checked wallet, or `None` if it is already unlocked.
+fn decrypt_for_unlock(
+    conn: &Connection,
+    account_name: &str,
+    passphrase: &str,
+) -> WalletDbResult<Option<(AccountRow, WalletType)>> {
+    let account = get_account_by_name(conn, account_name)?
+        .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", account_name)))?;
+    if session_for(&account).is_some() {
+        return Ok(None);
+    }
     let wallet_json = match account.decrypt_wallet_json(passphrase) {
         Ok(wallet_json) => wallet_json,
         Err(WalletDbError::DecryptionFailed(_)) => {
@@ -75,19 +132,7 @@ pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> Wallet
     };
     // Also checks the keys belong to this account before trusting them.
     let wallet = account.parse_wallet_json(&wallet_json)?;
-
-    let changes = changes_guard();
-    if session_for(&account).is_some() {
-        return Ok(());
-    }
-    let current = get_account_by_name(conn, account_name)?;
-    let unchanged = current.is_some_and(|current| current.encrypted_wallet == account.encrypted_wallet);
-    if !unchanged || changes.for_name(account_name) != locks_before {
-        return Err(WalletDbError::NotUnlocked(account_name.to_string()));
-    }
-    store(account_name, account.encrypted_wallet, wallet);
-    info!(target: "audit", account = account_name; "Key session unlocked");
-    Ok(())
+    Ok(Some((account, wallet)))
 }
 
 /// Stops new operations from using `account_name`'s session and drops the cached keys.
@@ -97,8 +142,7 @@ pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> Wallet
 /// cancel those. May wait for an in-progress passphrase change, delete or rename.
 pub fn lock(account_name: &str) {
     let mut changes = changes_guard();
-    let count = changes.by_name.entry(account_name.to_string()).or_default();
-    *count = count.wrapping_add(1);
+    changes.record_lock(account_name);
     if take(account_name).is_some() {
         info!(target: "audit", account = account_name; "Key session locked");
     }
@@ -129,24 +173,27 @@ pub(crate) fn changes_guard() -> MutexGuard<'static, LockCounts> {
     CHANGES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) fn take(account_name: &str) -> Option<Arc<UnlockedAccount>> {
+fn take(account_name: &str) -> Option<Arc<UnlockedAccount>> {
     SESSIONS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(account_name)
 }
 
-/// Stores a session for a wallet already decrypted from `encrypted_wallet` and checked
-/// against the account's fingerprint.
-pub(crate) fn store(account_name: &str, encrypted_wallet: Vec<u8>, wallet: WalletType) {
+/// Stores a session for `wallet`, already decrypted from `account` and checked against its
+/// fingerprint.
+pub(crate) fn store(account: &AccountRow, wallet: WalletType) {
     let session = UnlockedAccount {
-        encrypted_wallet,
+        encrypted_wallet: account.encrypted_wallet.clone(),
+        cipher_nonce: account.cipher_nonce.clone(),
+        salt: account.salt.clone(),
+        fingerprint: account.fingerprint.clone(),
         wallet,
     };
     SESSIONS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(account_name.to_string(), Arc::new(session));
+        .insert(account.friendly_name.clone(), Arc::new(session));
 }
 
 /// Whether `account` (as read from its database) has a session.
@@ -156,19 +203,27 @@ pub(crate) fn has_session(account: &AccountRow) -> bool {
 
 /// Removes `account`'s session, leaving a same-named account's session from another database alone.
 pub(crate) fn remove_session_for(account: &AccountRow) {
-    if has_session(account) {
-        take(&account.friendly_name);
+    let account_name = &*account.friendly_name;
+    if has_session(account) && take(account_name).is_some() {
+        info!(target: "audit", account = account_name; "Key session locked");
     }
 }
 
 fn session_for(account: &AccountRow) -> Option<Arc<UnlockedAccount>> {
     let sessions = SESSIONS.read().unwrap_or_else(PoisonError::into_inner);
     let session = sessions.get(&account.friendly_name)?;
-    if session.encrypted_wallet == account.encrypted_wallet {
-        Some(Arc::clone(session))
-    } else {
-        None
-    }
+    let matches = session.encrypted_wallet == account.encrypted_wallet
+        && session.cipher_nonce == account.cipher_nonce
+        && session.salt == account.salt
+        && session.fingerprint == account.fingerprint;
+    if matches { Some(Arc::clone(session)) } else { None }
+}
+
+fn same_key_material(a: &AccountRow, b: &AccountRow) -> bool {
+    a.encrypted_wallet == b.encrypted_wallet
+        && a.cipher_nonce == b.cipher_nonce
+        && a.salt == b.salt
+        && a.fingerprint == b.fingerprint
 }
 
 #[cfg(test)]
@@ -226,6 +281,10 @@ mod tests {
             wallet_parses(),
             parses_before,
             "session hits must not re-parse the wallet"
+        );
+        assert!(
+            !changes_guard().unlocking.contains_key("session-once"),
+            "finished unlocks leave no lock bookkeeping behind"
         );
         lock("session-once");
     }
@@ -407,6 +466,46 @@ mod tests {
         delete_wallet(&second_path, "session-delete-shared").unwrap();
         assert!(is_unlocked(&first_conn, "session-delete-shared").unwrap());
         lock("session-delete-shared");
+    }
+
+    #[test]
+    fn a_row_with_the_same_ciphertext_but_other_key_material_does_not_use_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_pool = init_db(dir.path().join("first.db")).unwrap();
+        let second_pool = init_db(dir.path().join("second.db")).unwrap();
+        let first_conn = first_pool.get().unwrap();
+        let second_conn = second_pool.get().unwrap();
+        let first = new_account(&first_conn, "session-copied-ciphertext");
+        new_account(&second_conn, "session-copied-ciphertext");
+        unlock(&first_conn, "session-copied-ciphertext", "password").unwrap();
+
+        second_conn
+            .execute(
+                "UPDATE accounts SET encrypted_wallet = ?1",
+                rusqlite::params![first.encrypted_wallet],
+            )
+            .unwrap();
+        let copied = get_account_by_name(&second_conn, "session-copied-ciphertext")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            copied.unlocked_wallet_type(),
+            Err(WalletDbError::NotUnlocked(_))
+        ));
+        lock("session-copied-ciphertext");
+    }
+
+    #[test]
+    fn a_malformed_row_is_not_reported_as_a_wrong_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = init_db(dir.path().join("session.db")).unwrap();
+        let conn = pool.get().unwrap();
+        new_account(&conn, "session-malformed");
+        conn.execute("UPDATE accounts SET cipher_nonce = x'00'", []).unwrap();
+
+        let err = unlock(&conn, "session-malformed", "password").expect_err("malformed row");
+        assert!(matches!(err, WalletDbError::Decoding(_)), "got: {err}");
+        assert!(!is_unlocked(&conn, "session-malformed").unwrap());
     }
 
     #[test]

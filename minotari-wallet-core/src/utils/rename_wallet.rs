@@ -20,8 +20,11 @@ pub fn rename_wallet(database_file: &Path, current_name: &str, new_name: &str) -
 /// Like [`rename_wallet`], on an open connection.
 pub fn rename_wallet_with_conn(conn: &mut Connection, current_name: &str, new_name: &str) -> Result<(), anyhow::Error> {
     // Held through the commit so no unlock can re-store the session from the old row.
-    let _session_changes = session::changes_guard();
-    let tx = conn.transaction()?;
+    let mut session_changes = session::changes_guard();
+    session_changes.record_lock(current_name);
+    session_changes.record_lock(new_name);
+    // BEGIN IMMEDIATE: the rename reads before it writes; see `delete_wallet_with_conn`.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let account = db::get_account_by_name(&tx, current_name)?
         .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", current_name)))?;

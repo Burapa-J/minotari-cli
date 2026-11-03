@@ -216,6 +216,13 @@ impl AccountRow {
 
     /// Decrypts the stored wallet JSON with `password`, always running Argon2.
     pub(crate) fn decrypt_wallet_json(&self, password: &str) -> WalletDbResult<Zeroizing<Vec<u8>>> {
+        // Malformed rows fail here, so `DecryptionFailed` below means a wrong password or tampering.
+        if self.cipher_nonce.len() != 24 || self.salt.len() < argon2::MIN_SALT_LEN {
+            warn!(account = &*self.friendly_name; "DB: Stored wallet nonce or salt is malformed");
+            return Err(WalletDbError::Decoding(
+                "Stored wallet nonce or salt is malformed".to_string(),
+            ));
+        }
         let encrypted_data = FullEncryptedData {
             ciphertext: &self.encrypted_wallet,
             nonce: &self.cipher_nonce,
@@ -231,8 +238,15 @@ impl AccountRow {
     pub(crate) fn parse_wallet_json(&self, wallet_json: &[u8]) -> WalletDbResult<WalletType> {
         #[cfg(test)]
         WALLET_PARSES.with(|count| count.set(count.get() + 1));
-        let wallet: WalletType = serde_json::from_slice(wallet_json)
-            .map_err(|e| WalletDbError::Decoding(format!("Failed to deserialize wallet JSON: {}", e)))?;
+        // serde_json's message can quote the decrypted input, so report only where and what kind.
+        let wallet: WalletType = serde_json::from_slice(wallet_json).map_err(|e| {
+            WalletDbError::Decoding(format!(
+                "Failed to deserialize wallet JSON: {:?} error at line {} column {}",
+                e.classify(),
+                e.line(),
+                e.column()
+            ))
+        })?;
 
         // The fingerprint column is the only record of *which* wallet this row is
         // supposed to hold. AEAD tells us the ciphertext was not tampered with under
@@ -592,14 +606,16 @@ pub fn change_passphrase(
     // No other session change can run until this one is done. Once committed, the old session no
     // longer matches the row; if this account was unlocked, it is unlocked again from the
     // re-encrypted wallet, with nothing left that can fail after the commit.
-    let _session_changes = session::changes_guard();
+    let mut session_changes = session::changes_guard();
+    session_changes.record_lock(account_name);
     let result = rewrite_encrypted_wallet(conn, account_name, old_password, new_password);
     if let Err(e) = conn.pragma_update(None, "secure_delete", previous_secure_delete) {
         warn!(error:% = e; "DB: Failed to restore secure_delete after passphrase change");
     }
-    let (previous_row, encrypted_wallet, wallet) = result?;
+    let (previous_row, updated_row, wallet) = result?;
     if session::has_session(&previous_row) {
-        session::store(account_name, encrypted_wallet, wallet);
+        session::store(&updated_row, wallet);
+        info!(target: "audit", account = account_name; "Key session unlocked under the new passphrase");
     }
     Ok(())
 }
@@ -609,7 +625,7 @@ fn rewrite_encrypted_wallet(
     account_name: &str,
     old_password: &str,
     new_password: &str,
-) -> WalletDbResult<(AccountRow, Vec<u8>, WalletType)> {
+) -> WalletDbResult<(AccountRow, AccountRow, WalletType)> {
     // The encrypted wallet is the only field `encrypt_data` writes. Read and rewrite it under
     // the write lock so a concurrent change cannot be lost.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -652,7 +668,16 @@ fn rewrite_encrypted_wallet(
         Err(e) => warn!(error:% = e; "DB: WAL checkpoint after passphrase change failed"),
     }
 
-    Ok((account, encrypted_data.ciphertext, wallet))
+    let updated = AccountRow {
+        id: account.id,
+        friendly_name: account.friendly_name.clone(),
+        fingerprint: account.fingerprint.clone(),
+        encrypted_wallet: encrypted_data.ciphertext,
+        cipher_nonce: encrypted_data.nonce,
+        salt: encrypted_data.salt_bytes,
+        birthday: account.birthday,
+    };
+    Ok((account, updated, wallet))
 }
 
 #[cfg(test)]
