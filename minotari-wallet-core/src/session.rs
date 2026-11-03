@@ -47,11 +47,7 @@ pub fn unlock(conn: &Connection, account_name: &str, passphrase: &str) -> Wallet
     // Checks the keys belong to this account before trusting them.
     account.parse_wallet_json(&wallet_json)?;
 
-    let session = UnlockedAccount {
-        encrypted_wallet: account.encrypted_wallet,
-        wallet_json,
-    };
-    restore(account_name, Arc::new(session));
+    store(account_name, account.encrypted_wallet, wallet_json);
     Ok(())
 }
 
@@ -85,6 +81,15 @@ pub(crate) fn take(account_name: &str) -> Option<Arc<UnlockedAccount>> {
         .write()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(account_name)
+}
+
+/// Stores a session for wallet JSON already decrypted from `encrypted_wallet`.
+pub(crate) fn store(account_name: &str, encrypted_wallet: Vec<u8>, wallet_json: Zeroizing<Vec<u8>>) {
+    let session = UnlockedAccount {
+        encrypted_wallet,
+        wallet_json,
+    };
+    restore(account_name, Arc::new(session));
 }
 
 pub(crate) fn restore(account_name: &str, session: Arc<UnlockedAccount>) {
@@ -195,7 +200,10 @@ mod tests {
         assert!(matches!(err, WalletDbError::DecryptionFailed(_)), "got: {err}");
         assert!(is_unlocked("session-change"), "a failed change keeps the session");
 
+        let before = derivations();
         change_passphrase(&mut conn, "session-change", "password", "new").unwrap();
+        // One derivation checks the old passphrase, one encrypts under the new; none re-unlocks.
+        assert_eq!(derivations() - before, 2);
         assert!(is_unlocked("session-change"));
         let account = get_account_by_name(&conn, "session-change").unwrap().unwrap();
         sign_message_unlocked(&account, "hello").unwrap();
@@ -207,6 +215,31 @@ mod tests {
         ));
         unlock(&conn, "session-change", "new").unwrap();
         lock("session-change");
+    }
+
+    #[test]
+    fn passphrase_gates_still_check_the_passphrase_while_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = init_db(dir.path().join("session.db")).unwrap();
+        let conn = pool.get().unwrap();
+        let account = new_account(&conn, "session-gates");
+        unlock(&conn, "session-gates", "password").unwrap();
+
+        assert!(matches!(
+            account.get_seed_words("wrong"),
+            Err(WalletDbError::DecryptionFailed(_))
+        ));
+        assert!(matches!(
+            account.get_keys_hex("wrong"),
+            Err(WalletDbError::DecryptionFailed(_))
+        ));
+        assert!(matches!(
+            account.decrypt_wallet_type_with_passphrase("wrong"),
+            Err(WalletDbError::DecryptionFailed(_))
+        ));
+        assert!(account.get_seed_words("password").unwrap().is_some());
+        account.get_keys_hex("password").unwrap();
+        lock("session-gates");
     }
 
     #[test]

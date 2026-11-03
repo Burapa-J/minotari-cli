@@ -155,7 +155,7 @@ pub async fn rollback_account_to_height(
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let account = db::get_account_by_name(&tx, &account_name)?
             .ok_or_else(|| WalletDbError::InvalidInput(format!("Account not found: {}", account_name)))?;
-        account.decrypt_wallet_type(&password)?;
+        account.decrypt_wallet_type_with_passphrase(&password)?;
 
         info!(
             target: "audit",

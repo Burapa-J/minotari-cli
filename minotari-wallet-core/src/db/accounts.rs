@@ -182,6 +182,14 @@ impl AccountRow {
         if let Some(wallet) = session::unlocked_wallet_type(self)? {
             return Ok(wallet);
         }
+        self.decrypt_wallet_type_with_passphrase(password)
+    }
+
+    /// Loads the account's wallet keys with `password`, ignoring any session.
+    ///
+    /// Use this where the passphrase is an authorization check (secret export, destructive
+    /// operations), so an unlocked session cannot stand in for it.
+    pub fn decrypt_wallet_type_with_passphrase(&self, password: &str) -> WalletDbResult<WalletType> {
         let wallet_json = self.decrypt_wallet_json(password)?;
         self.parse_wallet_json(&wallet_json)
     }
@@ -299,7 +307,7 @@ impl AccountRow {
     }
 
     pub fn get_seed_words(&self, password: &str) -> WalletDbResult<Option<SeedWords>> {
-        let wallet = self.decrypt_wallet_type(password)?;
+        let wallet = self.decrypt_wallet_type_with_passphrase(password)?;
 
         match wallet {
             WalletType::SeedWords(seed_wallet) => {
@@ -320,7 +328,7 @@ impl AccountRow {
     /// handed back in a buffer that wipes itself rather than as a plain `String` left
     /// in the heap after printing.
     pub fn get_keys_hex(&self, password: &str) -> WalletDbResult<(Zeroizing<String>, String)> {
-        let wallet = self.decrypt_wallet_type(password)?;
+        let wallet = self.decrypt_wallet_type_with_passphrase(password)?;
 
         let view_key = wallet.get_view_key();
         let spend_key = wallet.get_public_spend_key();
@@ -563,20 +571,25 @@ pub fn change_passphrase(
     // `secure_delete` is turned on for the rewrite only; put the connection back as it was.
     let previous_secure_delete: i64 = conn.pragma_query_value(None, "secure_delete", |row| row.get(0))?;
 
-    // Lock for the rewrite; a failed change puts the session back, a successful one unlocks again
-    // under the new passphrase.
+    // Lock for the rewrite; a failed change puts the session back, a successful one is unlocked
+    // again from the re-encrypted wallet, with nothing left that can fail after the commit.
     let previous_session = session::take(account_name);
     let result = rewrite_encrypted_wallet(conn, account_name, old_password, new_password);
     if let Err(e) = conn.pragma_update(None, "secure_delete", previous_secure_delete) {
         warn!(error:% = e; "DB: Failed to restore secure_delete after passphrase change");
     }
-    if let Some(previous_session) = previous_session {
-        match &result {
-            Ok(()) => session::unlock(conn, account_name, new_password)?,
-            Err(_) => session::restore(account_name, previous_session),
-        }
+    match (result, previous_session) {
+        (Ok((encrypted_wallet, wallet_json)), Some(_)) => {
+            session::store(account_name, encrypted_wallet, wallet_json);
+            Ok(())
+        },
+        (Ok(_), None) => Ok(()),
+        (Err(e), Some(previous_session)) => {
+            session::restore(account_name, previous_session);
+            Err(e)
+        },
+        (Err(e), None) => Err(e),
     }
-    result
 }
 
 fn rewrite_encrypted_wallet(
@@ -584,7 +597,7 @@ fn rewrite_encrypted_wallet(
     account_name: &str,
     old_password: &str,
     new_password: &str,
-) -> WalletDbResult<()> {
+) -> WalletDbResult<(Vec<u8>, Zeroizing<Vec<u8>>)> {
     // The encrypted wallet is the only field `encrypt_data` writes. Read and rewrite it under
     // the write lock so a concurrent change cannot be lost.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -592,7 +605,7 @@ fn rewrite_encrypted_wallet(
     let account = get_account_by_name(&tx, account_name)?
         .ok_or_else(|| WalletDbError::InvalidInput(format!("Account '{}' not found", account_name)))?;
     // Always check the old passphrase, even when the account is unlocked.
-    let wallet = account.parse_wallet_json(&account.decrypt_wallet_json(old_password)?)?;
+    let wallet = account.decrypt_wallet_type_with_passphrase(old_password)?;
     // Sized well above any wallet's JSON so the buffer never reallocates and leaves a copy behind.
     let mut wallet_json = Zeroizing::new(Vec::with_capacity(16 * 1024));
     serde_json::to_writer(&mut *wallet_json, &wallet)
@@ -627,7 +640,7 @@ fn rewrite_encrypted_wallet(
         Err(e) => warn!(error:% = e; "DB: WAL checkpoint after passphrase change failed"),
     }
 
-    Ok(())
+    Ok((encrypted_data.ciphertext, wallet_json))
 }
 
 #[cfg(test)]
