@@ -290,6 +290,54 @@ mod tests {
     }
 
     #[test]
+    fn a_lock_during_an_unlock_cancels_it() {
+        let mut counts = LockCounts::default();
+        let started = counts.start_unlock("a");
+        counts.record_lock("a");
+        assert_ne!(counts.finish_unlock("a"), started);
+        assert!(counts.unlocking.is_empty());
+    }
+
+    #[test]
+    fn one_lock_cancels_every_unlock_of_that_name_in_flight() {
+        let mut counts = LockCounts::default();
+        let first = counts.start_unlock("a");
+        let second = counts.start_unlock("a");
+        counts.record_lock("a");
+        assert_ne!(counts.finish_unlock("a"), first);
+        assert_ne!(counts.finish_unlock("a"), second);
+        assert!(counts.unlocking.is_empty());
+    }
+
+    #[test]
+    fn an_unlock_started_after_a_lock_is_not_cancelled_by_it() {
+        let mut counts = LockCounts::default();
+        let first = counts.start_unlock("a");
+        counts.record_lock("a");
+        let second = counts.start_unlock("a");
+        assert_ne!(counts.finish_unlock("a"), first);
+        assert_eq!(counts.finish_unlock("a"), second);
+        assert!(counts.unlocking.is_empty());
+    }
+
+    #[test]
+    fn lock_all_cancels_an_unlock_in_flight() {
+        let mut counts = LockCounts::default();
+        let started = counts.start_unlock("a");
+        counts.all = counts.all.wrapping_add(1);
+        assert_ne!(counts.finish_unlock("a"), started);
+    }
+
+    #[test]
+    fn a_lock_with_no_unlock_in_flight_records_nothing() {
+        let mut counts = LockCounts::default();
+        counts.record_lock("a");
+        assert!(counts.unlocking.is_empty());
+        let started = counts.start_unlock("a");
+        assert_eq!(counts.finish_unlock("a"), started);
+    }
+
+    #[test]
     fn a_wrong_passphrase_stores_no_session() {
         let dir = tempfile::tempdir().unwrap();
         let pool = init_db(dir.path().join("session.db")).unwrap();
