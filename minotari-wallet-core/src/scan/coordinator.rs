@@ -535,7 +535,11 @@ impl ScanCoordinator {
                         )
                         .await;
                 }
-                if self.deadline_short_of(&targets, tip_height) {
+                // A Partial scan that reached its block limit on this batch ends
+                // through the block limit path below, which runs the post-scan monitor.
+                let block_limit_reached =
+                    matches!(mode, ScanMode::Partial { max_blocks } if total_scanned_globally >= max_blocks);
+                if !block_limit_reached && self.deadline_short_of(&targets, tip_height) {
                     info!(last_scanned_block = max_new_height_in_batch; "Scan deadline reached");
                     return self
                         .stop_scan(&targets, deadline_stop, tip_height, total_scanned_globally, all_events)
@@ -2376,6 +2380,39 @@ mod tests {
             TransactionDisplayStatus::Confirmed,
             "the post-scan monitor ran"
         );
+    }
+
+    #[tokio::test]
+    async fn a_partial_scan_whose_deadline_passes_on_its_block_limit_still_runs_the_post_scan_monitor() {
+        let mut setup = setup(1500, 1600).await;
+        setup.coordinator.deadline = Some(Instant::now());
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(
+                vec![account(&setup.pool)],
+                "password",
+                ScanMode::Partial { max_blocks: 10 },
+                0,
+                None,
+            )
+            .await
+            .expect("scan");
+        assert!(more_blocks, "the scan stopped before the tip");
+        let events = drain(&mut setup.events);
+
+        assert_eq!(terminal_count(&events), 1);
+        assert_ne!(displayed_status(&setup.pool), TransactionDisplayStatus::Pending);
+        let updated = position(&events, |e| matches!(e, ProcessingEvent::TransactionsUpdated(_)))
+            .expect("the post-scan monitor must emit the updated transaction");
+        let exhausted = position(&events, |e| {
+            matches!(
+                e,
+                ProcessingEvent::ScanStatus(ScanStatusEvent::BudgetExhausted { tip_height: 1600, .. })
+            )
+        })
+        .expect("budget exhausted");
+        assert!(updated < exhausted);
     }
 
     #[tokio::test]
