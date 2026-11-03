@@ -46,6 +46,14 @@ pub enum WalletDbError {
     #[error("Key decryption failed: {0}")]
     DecryptionFailed(String),
 
+    /// `session::unlock` was given a passphrase that does not decrypt the account.
+    #[error("Invalid passphrase")]
+    InvalidPassphrase,
+
+    /// The operation needs the account's key session, and it is not unlocked.
+    #[error("Account '{0}' is not unlocked")]
+    NotUnlocked(String),
+
     #[error("Unexpected error: {0}")]
     Unexpected(String),
 }
