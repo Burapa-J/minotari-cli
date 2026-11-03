@@ -26,7 +26,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use minotari::transactions::input_selector::InputSelector;
+//! use minotari_wallet_core::transactions::input_selector::InputSelector;
 //!
 //! let selector = InputSelector::new(account_id);
 //!
@@ -203,7 +203,7 @@ impl UtxoSelection {
 /// # Example
 ///
 /// ```rust,ignore
-/// use minotari::transactions::input_selector::InputSelector;
+/// use minotari_wallet_core::transactions::input_selector::InputSelector;
 ///
 /// let selector = InputSelector::new(account_id);
 ///

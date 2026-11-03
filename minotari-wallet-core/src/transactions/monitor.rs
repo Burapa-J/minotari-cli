@@ -41,7 +41,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use minotari::transactions::monitor::{TransactionMonitor, MonitoringState};
+//! use minotari_wallet_core::transactions::monitor::{TransactionMonitor, MonitoringState};
 //!
 //! // Initialize monitoring state
 //! let state = MonitoringState::new();

@@ -24,7 +24,7 @@
 //!
 //! ```rust,no_run
 //! use url::Url;
-//! use minotari::http::WalletHttpClient;
+//! use minotari_wallet_core::http::WalletHttpClient;
 //!
 //! # async fn example() -> Result<(), anyhow::Error> {
 //! // Create a client connected to a local base node

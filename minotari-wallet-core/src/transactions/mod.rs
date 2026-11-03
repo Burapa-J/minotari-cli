@@ -47,7 +47,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use minotari::transactions::{TransactionHistoryService, TransactionMonitor};
+//! use minotari_wallet_core::transactions::{TransactionHistoryService, TransactionMonitor};
 //!
 //! // Load transaction history for an account
 //! let history_service = TransactionHistoryService::new(db_pool.clone());

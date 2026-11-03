@@ -331,7 +331,7 @@ fn resolve_replay(conn: &Connection, binding: &IdempotencyBinding, account_id: i
 /// # Example
 ///
 /// ```rust,ignore
-/// use minotari::transactions::fund_locker::FundLocker;
+/// use minotari_wallet_core::transactions::fund_locker::FundLocker;
 /// use tari_transaction_components::tari_amount::MicroMinotari;
 ///
 /// let locker = FundLocker::new(db_pool);

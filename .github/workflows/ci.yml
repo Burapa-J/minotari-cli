@@ -76,6 +76,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      # `--no-default-features` alone is not supported: the core needs `http`.
       - name: Build
         run: cargo build --locked -p minotari-wallet-core --no-default-features --features http
 

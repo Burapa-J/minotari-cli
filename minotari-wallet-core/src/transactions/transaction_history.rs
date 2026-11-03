@@ -91,7 +91,7 @@ pub enum TransactionHistoryError {
 /// # Example
 ///
 /// ```rust,ignore
-/// use minotari::transactions::TransactionHistoryService;
+/// use minotari_wallet_core::transactions::TransactionHistoryService;
 ///
 /// let service = TransactionHistoryService::new(db_pool);
 ///

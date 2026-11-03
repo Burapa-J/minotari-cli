@@ -16,7 +16,7 @@
 //!
 //! ```rust,no_run
 //! use url::Url;
-//! use minotari::http::WalletHttpClient;
+//! use minotari_wallet_core::http::WalletHttpClient;
 //!
 //! # async fn example() -> Result<(), anyhow::Error> {
 //! let client = WalletHttpClient::new(Url::parse("http://localhost:18142")?)?;
@@ -74,7 +74,7 @@ use super::http_client::HttpClient;
 /// ```rust,no_run
 /// use std::time::Duration;
 /// use url::Url;
-/// use minotari::http::WalletHttpClient;
+/// use minotari_wallet_core::http::WalletHttpClient;
 ///
 /// # async fn example() -> Result<(), anyhow::Error> {
 /// // Create with custom timeout and retry settings
@@ -141,7 +141,7 @@ impl WalletHttpClient {
     ///
     /// ```rust,no_run
     /// use url::Url;
-    /// use minotari::http::WalletHttpClient;
+    /// use minotari_wallet_core::http::WalletHttpClient;
     ///
     /// let client = WalletHttpClient::new(
     ///     Url::parse("http://localhost:18142").unwrap()
@@ -174,7 +174,7 @@ impl WalletHttpClient {
     /// ```rust,no_run
     /// use std::time::Duration;
     /// use url::Url;
-    /// use minotari::http::WalletHttpClient;
+    /// use minotari_wallet_core::http::WalletHttpClient;
     ///
     /// // Client with longer timeout for slow connections
     /// let client = WalletHttpClient::with_config(
@@ -220,7 +220,7 @@ impl WalletHttpClient {
     ///
     /// ```rust,no_run
     /// use url::Url;
-    /// use minotari::http::WalletHttpClient;
+    /// use minotari_wallet_core::http::WalletHttpClient;
     ///
     /// # async fn example() -> Result<(), anyhow::Error> {
     /// let client = WalletHttpClient::new(Url::parse("http://localhost:18142")?)?;
@@ -256,7 +256,7 @@ impl WalletHttpClient {
     ///
     /// ```rust,no_run
     /// use url::Url;
-    /// use minotari::http::WalletHttpClient;
+    /// use minotari_wallet_core::http::WalletHttpClient;
     ///
     /// # async fn example() -> Result<(), anyhow::Error> {
     /// let client = WalletHttpClient::new(Url::parse("http://localhost:18142")?)?;
@@ -299,7 +299,7 @@ impl WalletHttpClient {
     ///
     /// ```rust,no_run
     /// use url::Url;
-    /// use minotari::http::WalletHttpClient;
+    /// use minotari_wallet_core::http::WalletHttpClient;
     ///
     /// # async fn example() -> Result<(), anyhow::Error> {
     /// let client = WalletHttpClient::new(Url::parse("http://localhost:18142")?)?;
@@ -344,7 +344,7 @@ impl WalletHttpClient {
     ///
     /// ```rust,no_run
     /// use url::Url;
-    /// use minotari::http::WalletHttpClient;
+    /// use minotari_wallet_core::http::WalletHttpClient;
     /// use tari_transaction_components::transaction_components::Transaction;
     ///
     /// # async fn example(transaction: Transaction) -> Result<(), anyhow::Error> {
@@ -425,7 +425,7 @@ impl WalletHttpClient {
     ///
     /// ```rust,no_run
     /// use url::Url;
-    /// use minotari::http::{WalletHttpClient};
+    /// use minotari_wallet_core::http::{WalletHttpClient};
     /// use tari_transaction_components::rpc::models::TxLocation;
     /// # async fn example() -> Result<(), anyhow::Error> {
     /// let client = WalletHttpClient::new(Url::parse("http://localhost:18142")?)?;

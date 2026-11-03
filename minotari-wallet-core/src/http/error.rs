@@ -24,7 +24,7 @@ use thiserror::Error;
 /// # Example
 ///
 /// ```rust,no_run
-/// use minotari::http::HttpError;
+/// use minotari_wallet_core::http::HttpError;
 ///
 /// fn handle_error(err: HttpError) {
 ///     match err {

@@ -54,7 +54,7 @@ use tari_utilities::hex::Hex;
 /// # Example
 ///
 /// ```ignore
-/// use minotari::utils::init_wallet::init_with_view_key;
+/// use minotari_wallet_core::utils::init_wallet::init_with_view_key;
 /// use std::path::Path;
 ///
 /// # fn example() -> Result<(), anyhow::Error> {

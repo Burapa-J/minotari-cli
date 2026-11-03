@@ -9,7 +9,8 @@ license.workspace = true
 
 [features]
 default = ["http"]
-grpc = ["minotari-scanning/grpc"]
+# The scanner and the wallet HTTP client need `http`, so gRPC builds on top of it.
+grpc = ["http", "minotari-scanning/grpc"]
 http = ["minotari-scanning/http"]
 # OpenAPI schemas for the daemon's API docs.
 utoipa = ["dep:utoipa"]

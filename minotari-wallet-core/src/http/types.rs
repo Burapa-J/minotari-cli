@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust
-/// use minotari::http::JsonRpcResponse;
+/// use minotari_wallet_core::http::JsonRpcResponse;
 /// use serde_json::json;
 ///
 /// let json = json!({

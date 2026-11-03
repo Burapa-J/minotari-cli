@@ -46,7 +46,7 @@ const MAX_TRANSACTION_SIZE: usize = RPC_MAX_FRAME_SIZE - SIZE_MARGIN;
 /// # Example
 ///
 /// ```rust,ignore
-/// use minotari::http::utils::TransactionTooLargeError;
+/// use minotari_wallet_core::http::utils::TransactionTooLargeError;
 ///
 /// let err = TransactionTooLargeError {
 ///     got: 3_000_000,
@@ -100,7 +100,7 @@ impl std::error::Error for TransactionTooLargeError {}
 ///
 /// ```rust,ignore
 /// use tari_transaction_components::transaction_components::Transaction;
-/// use minotari::http::utils::check_transaction_size;
+/// use minotari_wallet_core::http::utils::check_transaction_size;
 ///
 /// fn submit_transaction(tx: &Transaction) -> Result<(), anyhow::Error> {
 ///     // Validate size before submitting

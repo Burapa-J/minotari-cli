@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use minotari::transactions::one_sided_transaction::{OneSidedTransaction, Recipient};
+//! use minotari_wallet_core::transactions::one_sided_transaction::{OneSidedTransaction, Recipient};
 //!
 //! let tx_builder = OneSidedTransaction::new(db_pool, Network::MainNet, password);
 //!
@@ -79,7 +79,7 @@ use zeroize::Zeroizing;
 /// # Example
 ///
 /// ```rust,ignore
-/// use minotari::transactions::one_sided_transaction::Recipient;
+/// use minotari_wallet_core::transactions::one_sided_transaction::Recipient;
 ///
 /// let recipient = Recipient {
 ///     address: TariAddress::from_base58("...")?,
@@ -259,7 +259,7 @@ pub fn unsigned_transaction_binding(
 /// # Example
 ///
 /// ```rust,ignore
-/// use minotari::transactions::one_sided_transaction::OneSidedTransaction;
+/// use minotari_wallet_core::transactions::one_sided_transaction::OneSidedTransaction;
 ///
 /// let builder = OneSidedTransaction::new(
 ///     db_pool,

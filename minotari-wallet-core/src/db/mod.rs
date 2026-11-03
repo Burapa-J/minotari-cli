@@ -26,7 +26,7 @@
 //! # Usage Example
 //!
 //! ```ignore
-//! use minotari::db::{init_db, get_accounts, get_balance};
+//! use minotari_wallet_core::db::{init_db, get_accounts, get_balance};
 //! use std::path::PathBuf;
 //!
 //! # fn example() -> Result<(), anyhow::Error> {
@@ -186,7 +186,7 @@ static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
 /// # Example
 ///
 /// ```ignore
-/// use minotari::db::init_db;
+/// use minotari_wallet_core::db::init_db;
 /// use std::path::PathBuf;
 ///
 /// # fn example() -> Result<(), anyhow::Error> {

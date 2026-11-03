@@ -43,7 +43,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use minotari::transactions::manager::TransactionSender;
+//! use minotari_wallet_core::transactions::manager::TransactionSender;
 //!
 //! // Create sender for an account
 //! let mut sender = TransactionSender::new(

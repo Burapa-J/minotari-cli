@@ -39,6 +39,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "macos-system-configuration",
     "rustls-tls",
+    # Also trust the OS certificate store, as native-tls did (private CAs, TLS-intercepting proxies).
+    "rustls-tls-native-roots",
 ] }
 rusqlite = { version = "0.39", features = ["bundled", "chrono", "uuid", "serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
