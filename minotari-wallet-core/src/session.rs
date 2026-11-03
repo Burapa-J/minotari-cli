@@ -178,7 +178,8 @@ mod tests {
     use crate::db::{change_passphrase, create_account, init_db};
     use crate::signing::{SigningError, sign_message, sign_message_unlocked, verify_message};
     use crate::utils::crypto::KEY_DERIVATIONS;
-    use crate::utils::{delete_wallet::delete_wallet, rename_wallet::rename_wallet};
+    use crate::utils::delete_wallet::{delete_wallet, delete_wallet_with_conn};
+    use crate::utils::rename_wallet::rename_wallet_with_conn;
     use tari_common::configuration::Network;
     use tari_common_types::seeds::cipher_seed::CipherSeed;
     use tari_transaction_components::key_manager::wallet_types::SeedWordsWallet;
@@ -359,16 +360,15 @@ mod tests {
     #[test]
     fn delete_and_rename_lock_the_session() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("session.db");
-        let pool = init_db(db_path.clone()).unwrap();
-        let conn = pool.get().unwrap();
+        let pool = init_db(dir.path().join("session.db")).unwrap();
+        let mut conn = pool.get().unwrap();
         new_account(&conn, "session-delete");
         new_account(&conn, "session-rename");
         unlock(&conn, "session-delete", "password").unwrap();
         unlock(&conn, "session-rename", "password").unwrap();
 
-        delete_wallet(&db_path, "session-delete").unwrap();
-        rename_wallet(&db_path, "session-rename", "session-renamed").unwrap();
+        delete_wallet_with_conn(&mut conn, "session-delete").unwrap();
+        rename_wallet_with_conn(&mut conn, "session-rename", "session-renamed").unwrap();
         // The rows are gone or renamed, so check the session map itself.
         let sessions = SESSIONS.read().unwrap();
         assert!(!sessions.contains_key("session-delete"));
