@@ -4,7 +4,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use log::{debug, trace};
+use log::{debug, info, trace};
 use serde::Deserialize;
 
 use crate::{
@@ -286,6 +286,7 @@ pub async fn api_create_address_with_payment_id(
     let payment_id_bytes = hex::decode(&body.payment_id_hex)
         .map_err(|e| ApiError::BadRequest(format!("Invalid hex in payment_id_hex: {}", e)))?;
 
+    info!(target: "audit", "API: Create address with payment ID request");
     trace!(
         target: "audit",
         account = &*name,

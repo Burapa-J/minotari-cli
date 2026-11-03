@@ -236,8 +236,9 @@ pub(crate) enum EventChannel {
     None,
     Unbounded(mpsc::UnboundedSender<ProcessingEvent>),
     /// Waits for room in the channel until `cancel` fires; after that an event
-    /// that does not fit is dropped, so a stalled consumer cannot block a cancel.
-    /// Terminal and reorg events always wait (see [`EventChannel::send_always`]).
+    /// that does not fit is dropped. Terminal and reorg events still wait for
+    /// room after a cancel (see [`EventChannel::send_always`]), so the consumer
+    /// must keep reading or drop the receiver for a cancelled scan to finish.
     Bounded {
         sender: mpsc::Sender<ProcessingEvent>,
         cancel: Option<CancellationToken>,

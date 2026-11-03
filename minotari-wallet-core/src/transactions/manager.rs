@@ -869,6 +869,7 @@ impl TransactionSender {
         let processed_transaction = &self.processed_transactions;
         let account_id = self.account.id;
 
+        info!(target: "audit", "Finalizing and broadcasting transaction");
         trace!(
             target: "audit",
             id = processed_transaction.id();
@@ -1223,6 +1224,7 @@ pub fn record_first_broadcast(
 ) -> FirstBroadcast {
     let (mut first_broadcast, recorded) = match response {
         Ok(submission) if submission.accepted => {
+            info!(target: "audit", "Transaction accepted by network");
             trace!(
                 target: "audit",
                 id = completed_tx_id.to_string().as_str();
@@ -1235,6 +1237,7 @@ pub fn record_first_broadcast(
             (FirstBroadcast::accepted(), recorded)
         },
         Ok(submission) if submission.rejection_reason == TxSubmissionRejectionReason::AlreadyMined => {
+            info!(target: "audit", "Transaction already mined by network");
             trace!(
                 target: "audit",
                 id = completed_tx_id.to_string().as_str();

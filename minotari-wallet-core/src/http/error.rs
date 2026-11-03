@@ -50,14 +50,14 @@ pub enum HttpError {
     // The underlying errors can quote what the node sent (a response body, a
     // fragment of malformed JSON), so their text is sanitised when shown.
     #[error("Request failed: {}", without_url(&.0.to_string()))]
-    RequestFailed(#[from] reqwest::Error),
+    RequestFailed(reqwest::Error),
 
     /// An error occurred in the HTTP middleware layer.
     ///
     /// The middleware handles retry logic and other cross-cutting concerns.
     /// This error may indicate that all retry attempts have been exhausted.
     #[error("Middleware error: {}", without_url(&.0.to_string()))]
-    MiddlewareError(#[from] reqwest_middleware::Error),
+    MiddlewareError(reqwest_middleware::Error),
 
     /// The server returned a non-success HTTP status code.
     ///
@@ -103,6 +103,25 @@ pub enum HttpError {
     /// The node sent more bytes than this endpoint allows.
     #[error("Node response body exceeds the {limit} byte limit")]
     ResponseTooLarge { limit: usize },
+}
+
+// The reqwest error is stored without its URL and is not exposed as a
+// `source()`, so chain printing (`{:#}`) cannot show the query string either.
+impl From<reqwest::Error> for HttpError {
+    fn from(error: reqwest::Error) -> Self {
+        HttpError::RequestFailed(error.without_url())
+    }
+}
+
+impl From<reqwest_middleware::Error> for HttpError {
+    fn from(error: reqwest_middleware::Error) -> Self {
+        match error {
+            reqwest_middleware::Error::Reqwest(error) => {
+                HttpError::MiddlewareError(reqwest_middleware::Error::Reqwest(error.without_url()))
+            },
+            other => HttpError::MiddlewareError(other),
+        }
+    }
 }
 
 /// Sanitised error text without the ` for url (...)` reqwest adds: request

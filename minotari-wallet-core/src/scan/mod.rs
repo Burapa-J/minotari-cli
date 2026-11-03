@@ -53,7 +53,10 @@
 //!   up). The two can be combined; the first limit reached stops the scan.
 //!
 //! The terminal event and `ReorgDetected` always reach a bounded channel,
-//! even after a cancel. A run that returns an error sends none. The next run
+//! even after a cancel: they wait for room, so the consumer must keep reading
+//! (or drop the receiver) for a cancelled scan to finish. Other events that do
+//! not fit after a cancel are dropped. The deadline is checked between batches
+//! and does not cut short a download or a wait for room already in progress. A run that returns an error sends none. The next run
 //! resumes after `last_scanned_height`, except a history backfill, which
 //! always restarts from the birthday: a deadline shorter than the whole
 //! backfill makes no lasting progress.

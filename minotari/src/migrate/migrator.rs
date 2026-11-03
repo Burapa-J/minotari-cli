@@ -140,6 +140,7 @@ pub fn run_migration(options: MigrationOptions) -> Result<MigrationReport, anyho
         return Err(anyhow!("Source and destination database paths cannot be the same"));
     }
 
+    info!(target: "audit", "Starting console-wallet -> minotari-cli migration");
     trace!(
         target: "audit",
         source = options.source_db_path.display().to_string().as_str(),

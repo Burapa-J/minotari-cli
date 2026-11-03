@@ -621,10 +621,14 @@ impl<E: EventSender> BlockProcessor<E> {
         height: u64,
         block_hash: &FixedHash,
     ) -> Result<(i64, WalletEvent), BlockProcessorError> {
+        info!(
+            target: "audit",
+            height = height;
+            "Transaction the monitor rejected was mined after all (its change is in a block)"
+        );
         trace!(
             target: "audit",
-            id = completed_tx_id.to_string().as_str(),
-            height = height;
+            id = completed_tx_id.to_string().as_str();
             "Transaction the monitor rejected was mined after all (its change is in a block)"
         );
         #[allow(clippy::cast_possible_wrap)]
@@ -710,12 +714,16 @@ impl<E: EventSender> BlockProcessor<E> {
                 continue;
             };
 
-            trace!(
+            info!(
                 target: "audit",
                 account_id = account_id,
-                tx_id:% = tx_id,
                 block_height = block.height,
                 value = &*mask_amount(output.value());
+                "Detected spent input"
+            );
+            trace!(
+                target: "audit",
+                tx_id:% = tx_id;
                 "Detected spent input"
             );
 
@@ -861,10 +869,14 @@ impl<E: EventSender> BlockProcessor<E> {
             let block_height = send_block.height as i64;
 
             if all_inputs_in_block && change_in_block {
+                info!(
+                    target: "audit",
+                    height = send_block.height;
+                    "Transaction mined (unconfirmed)"
+                );
                 trace!(
                     target: "audit",
-                    id = completed.id.to_string().as_str(),
-                    height = send_block.height;
+                    id = completed.id.to_string().as_str();
                     "Transaction mined (unconfirmed)"
                 );
                 db::mark_completed_transaction_as_mined_unconfirmed(
@@ -893,6 +905,7 @@ impl<E: EventSender> BlockProcessor<E> {
                 generated_events.push((event_id, event));
 
                 if was_rejected {
+                    info!(target: "audit", "Transaction the monitor rejected was mined after all");
                     trace!(
                         target: "audit",
                         id = completed.id.to_string().as_str();
@@ -1073,12 +1086,16 @@ impl<E: EventSender> BlockProcessor<E> {
             db::get_unconfirmed_outputs(tx, account_id, block.height, self.required_confirmations)?;
 
         for unconfirmed_output in unconfirmed_outputs {
-            trace!(
+            info!(
                 target: "audit",
                 account_id = account_id,
-                output_hash = &*mask_string(&hex::encode(unconfirmed_output.output_hash)),
                 original_height = unconfirmed_output.mined_in_block_height,
                 confirmed_at = block.height;
+                "Output confirmed"
+            );
+            trace!(
+                target: "audit",
+                output_hash = &*mask_string(&hex::encode(unconfirmed_output.output_hash));
                 "Output confirmed"
             );
 
@@ -1107,6 +1124,7 @@ impl<E: EventSender> BlockProcessor<E> {
             if unconfirmed_output.is_burn != 0 {
                 match get_burn_proof_by_output_hash(tx, &unconfirmed_output.output_hash) {
                     Ok(Some(_proof)) => {
+                        info!(target: "audit", "Burn output confirmed — daemon will fetch burn output proof");
                         trace!(
                             target: "audit",
                             output_hash = &*mask_string(&hex::encode(unconfirmed_output.output_hash));

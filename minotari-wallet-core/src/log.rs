@@ -131,4 +131,34 @@ mod tests {
         }
         assert!(found.is_empty(), "log these at trace! or drop the field: {found:#?}");
     }
+
+    #[test]
+    fn key_audit_events_are_logged_at_info() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        rust_files(&crate_dir.join("src"), &mut files);
+        rust_files(&crate_dir.join("../minotari/src"), &mut files);
+        let mut info_audit_calls = Vec::new();
+        for file in &files {
+            let source = std::fs::read_to_string(file).expect("read source");
+            for (start, _) in source.match_indices("info!(") {
+                let args = macro_args(&source[start + "info!(".len()..]);
+                if args.contains("target: \"audit\"") {
+                    info_audit_calls.push(args.to_string());
+                }
+            }
+        }
+
+        for event in [
+            "DB: Deleting account and all associated data",
+            "API: Burn transaction recorded",
+            "Burn transaction broadcasted",
+            "Transaction accepted by network",
+        ] {
+            assert!(
+                info_audit_calls.iter().any(|args| args.contains(event)),
+                "the audit event {event:?} must stay at info"
+            );
+        }
+    }
 }

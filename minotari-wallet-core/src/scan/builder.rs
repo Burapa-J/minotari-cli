@@ -182,13 +182,18 @@ impl Scanner {
     /// the consumer, so a slow consumer slows the scan instead of growing
     /// memory. Cancelling stops the wait; events that do not fit after a cancel
     /// are dropped, except the terminal event and `ReorgDetected`, which still
-    /// wait for room. `None` (the default) is unbounded.
+    /// wait for room: after a cancel the consumer must keep reading (or drop the
+    /// receiver) for the scan to finish. `None` (the default) is unbounded.
     pub fn event_buffer(mut self, size: Option<usize>) -> Self {
         self.event_buffer = size;
         self
     }
 
     /// Stops the scan at the first batch boundary after `deadline`.
+    ///
+    /// The deadline is checked between batches: it does not interrupt a block
+    /// download, a node request or a wait for room in a bounded event channel
+    /// that is already in progress, so a scan can run past it by that much.
     ///
     /// The scan then ends with [`ScanStatusEvent::BudgetExhausted`](crate::ScanStatusEvent::BudgetExhausted)
     /// (or `Completed` if a Full or Partial scan had reached the tip) and the

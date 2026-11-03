@@ -649,13 +649,16 @@ impl ScanCoordinator {
             return Ok(rewound);
         }
 
-        let mut conn = db_handler.get_connection().await?;
         for target in targets {
+            // The connection is released before the reorg is reported, which can
+            // wait on a slow consumer.
+            let mut conn = db_handler.get_connection().await?;
             let res = unless_cancelled(
                 cancel,
                 reorg::handle_reorgs(scanner, &mut conn, target.account.id, self.webhook_config.clone()),
             )
             .await;
+            drop(conn);
             let Some(res) = res else {
                 return Ok(rewound);
             };

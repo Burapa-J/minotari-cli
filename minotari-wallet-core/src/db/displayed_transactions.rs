@@ -3,7 +3,7 @@ use crate::log::mask_amount;
 use crate::models::Id;
 use crate::transactions::{DisplayedTransaction, TransactionDisplayStatus};
 use crate::utils::timestamp::{current_db_timestamp, format_timestamp};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use rusqlite::{Connection, OptionalExtension, named_params};
 use serde::Deserialize;
 use serde_rusqlite::from_rows;
@@ -326,10 +326,14 @@ pub fn find_pending_outbound_by_output_hash(
 /// Update an existing displayed transaction with blockchain info when it's mined.
 pub fn update_displayed_transaction_mined(conn: &Connection, tx: &DisplayedTransaction) -> WalletDbResult<bool> {
     let id = tx.id.to_string();
+    info!(
+        target: "audit",
+        height = tx.blockchain.block_height;
+        "DB: Displayed Transaction Mined"
+    );
     trace!(
         target: "audit",
-        id = id.as_str(),
-        height = tx.blockchain.block_height;
+        id = id.as_str();
         "DB: Displayed Transaction Mined"
     );
 

@@ -4,7 +4,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use log::{trace, warn};
+use log::{info, trace, warn};
 use serde::{Deserialize, Serialize};
 use tari_common_types::transaction::TxId;
 use tari_transaction_components::{tari_amount::MicroMinotari, transaction_components::Transaction};
@@ -217,10 +217,14 @@ pub async fn api_burn_funds(
     Path(WalletParams { name }): Path<WalletParams>,
     Json(body): Json<BurnFundsRequest>,
 ) -> Result<Json<BurnFundsResponse>, ApiError> {
+    info!(
+        target: "audit",
+        amount = body.amount.as_u64();
+        "API: Burn funds request"
+    );
     trace!(
         target: "audit",
-        account = &*name,
-        amount = body.amount.as_u64();
+        account = &*name;
         "API: Burn funds request"
     );
 
@@ -292,11 +296,15 @@ pub async fn api_burn_funds(
 
     let first_broadcast = broadcast_recorded_burn(app_state.db_pool.clone(), &client, result.transaction, tx_id).await;
 
+    info!(
+        target: "audit",
+        accepted_by_node = first_broadcast.accepted_by_node;
+        "API: Burn transaction recorded"
+    );
     trace!(
         target: "audit",
         tx_id = &*tx_id.to_string(),
-        output_hash = &*hex::encode(output_hash),
-        accepted_by_node = first_broadcast.accepted_by_node;
+        output_hash = &*hex::encode(output_hash);
         "API: Burn transaction recorded"
     );
 

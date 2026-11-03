@@ -69,7 +69,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use log::{trace, warn};
+use log::{info, trace, warn};
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, TransactionBehavior};
@@ -673,10 +673,14 @@ impl TransactionMonitor {
                         );
                         continue;
                     }
+                    info!(
+                        target: "audit",
+                        height = mined_height;
+                        "Transaction mined in a block the scan has already passed (unconfirmed)"
+                    );
                     trace!(
                         target: "audit",
-                        id = tx.id.to_string().as_str(),
-                        height = mined_height;
+                        id = tx.id.to_string().as_str();
                         "Transaction mined in a block the scan has already passed (unconfirmed)"
                     );
                     let event = WalletEvent {
@@ -703,6 +707,7 @@ impl TransactionMonitor {
                     result.wallet_events.push(event);
                 },
                 TxLocation::NotStored | TxLocation::None => {
+                    info!(target: "audit", "Broadcast transaction is not in the mempool");
                     trace!(
                         target: "audit",
                         id = tx.id.to_string().as_str();
@@ -753,6 +758,7 @@ impl TransactionMonitor {
         // and leaves the transaction as it is.
         match Self::broadcast_transaction(wallet_client, transaction).await? {
             SubmitOutcome::Accepted => {
+                info!(target: "audit", "Rebroadcasting transaction");
                 trace!(
                     target: "audit",
                     id = tx.id.to_string().as_str();
@@ -876,10 +882,14 @@ impl TransactionMonitor {
                     );
                     continue;
                 };
+                info!(
+                    target: "audit",
+                    confirmations = confirmations;
+                    "Transaction confirmed"
+                );
                 trace!(
                     target: "audit",
-                    id = tx.id.to_string().as_str(),
-                    confirmations = confirmations;
+                    id = tx.id.to_string().as_str();
                     "Transaction confirmed"
                 );
 

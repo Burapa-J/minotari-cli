@@ -1,4 +1,4 @@
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use rusqlite::{Connection, named_params};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::from_rows;
@@ -43,6 +43,7 @@ pub fn create_account(
     wallet: &WalletType,
     password: &str,
 ) -> WalletDbResult<()> {
+    info!(target: "audit", "DB: Creating new account");
     trace!(
         target: "audit",
         account = friendly_name;
@@ -469,6 +470,7 @@ fn get_balance_in_snapshot(conn: &Connection, account_id: i64) -> WalletDbResult
 /// Deletes the account row and its data. Does not touch its key session; use
 /// [`crate::utils::delete_wallet::delete_wallet`], which also locks it.
 pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDbResult<()> {
+    info!(target: "audit", "DB: Deleting account and all associated data");
     trace!(
         target: "audit",
         account = friendly_name;
@@ -525,7 +527,12 @@ pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDb
         )));
     }
 
-    trace!(target: "audit", account = friendly_name; "Account successfully deleted");
+    info!(target: "audit", "Account successfully deleted");
+    trace!(
+        target: "audit",
+        account = friendly_name;
+        "Account successfully deleted"
+    );
 
     Ok(())
 }
@@ -533,6 +540,7 @@ pub(crate) fn delete_account(conn: &Connection, friendly_name: &str) -> WalletDb
 /// Renames the account row. Does not touch its key session; use
 /// [`crate::utils::rename_wallet::rename_wallet`], which also locks it.
 pub(crate) fn update_account_name(conn: &Connection, current_name: &str, new_name: &str) -> WalletDbResult<()> {
+    info!(target: "audit", "DB: Renaming account");
     trace!(
         target: "audit",
         current_name = current_name,
@@ -592,6 +600,7 @@ pub fn change_passphrase(
     old_password: &str,
     new_password: &str,
 ) -> WalletDbResult<()> {
+    info!(target: "audit", "DB: Changing account passphrase");
     trace!(
         target: "audit",
         account = account_name;
@@ -652,6 +661,7 @@ fn rewrite_encrypted_wallet(
     )?;
     tx.commit()?;
 
+    info!(target: "audit", "DB: Account passphrase changed");
     trace!(
         target: "audit",
         account = account_name;

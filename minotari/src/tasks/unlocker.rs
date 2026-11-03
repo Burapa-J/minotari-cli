@@ -24,8 +24,14 @@ impl TransactionUnlocker {
 
         for tx in expired_txs {
             if Self::expire_and_unlock(conn, &tx.id)? {
-                trace!(target: "audit", id = &*tx.id; "Transaction expired: unlocked funds");
+                info!(target: "audit", "Transaction expired: unlocked funds");
+                trace!(
+                    target: "audit",
+                    id = &*tx.id;
+                    "Transaction expired: unlocked funds"
+                );
             } else {
+                info!(target: "audit", "Transaction was claimed after it was listed as expired; leaving its funds locked");
                 trace!(
                     target: "audit",
                     id = &*tx.id;

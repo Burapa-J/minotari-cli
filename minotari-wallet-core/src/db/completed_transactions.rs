@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use crate::db::error::WalletDbResult;
 use chrono::{DateTime, Utc};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use rusqlite::{Connection, OptionalExtension, Row, named_params};
 use tari_common_types::transaction::TxId;
 
@@ -139,10 +139,14 @@ pub fn create_completed_transaction(
         },
     )?;
 
+    info!(
+        target: "audit",
+        account_id = account_id;
+        "DB: Transaction Completed"
+    );
     trace!(
         target: "audit",
         id = id.to_string().as_str(),
-        account_id = account_id,
         pending_id = pending_tx_id;
         "DB: Transaction Completed"
     );
@@ -283,10 +287,14 @@ pub fn mark_completed_transaction_as_broadcasted(
     attempts: i32,
 ) -> WalletDbResult<bool> {
     let id = tx_id.to_string();
+    info!(
+        target: "audit",
+        attempts = attempts;
+        "DB: Marking completed tx as broadcasted"
+    );
     trace!(
         target: "audit",
-        id = id.as_str(),
-        attempts = attempts;
+        id = id.as_str();
         "DB: Marking completed tx as broadcasted"
     );
 
@@ -318,10 +326,14 @@ pub fn mark_completed_transaction_as_mined_unconfirmed(
     block_hash: &[u8],
 ) -> WalletDbResult<()> {
     let id = tx_id.to_string();
+    info!(
+        target: "audit",
+        height = block_height;
+        "DB: Transaction Mined (Unconfirmed)"
+    );
     trace!(
         target: "audit",
-        id = id.as_str(),
-        height = block_height;
+        id = id.as_str();
         "DB: Transaction Mined (Unconfirmed)"
     );
 
@@ -413,10 +425,14 @@ pub fn mark_completed_transaction_as_confirmed(
     sent_payref: String,
 ) -> WalletDbResult<()> {
     let id = tx_id.to_string();
+    info!(
+        target: "audit",
+        height = confirmation_height;
+        "DB: Transaction Confirmed"
+    );
     trace!(
         target: "audit",
-        id = id.as_str(),
-        height = confirmation_height;
+        id = id.as_str();
         "DB: Transaction Confirmed"
     );
 

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::anyhow;
-use log::trace;
+use log::{info, trace};
 use tari_common_types::transaction::TxId;
 
 use crate::{
@@ -42,10 +42,14 @@ pub fn handle_abandon_send(
         webhook_config.as_ref(),
     )?;
 
+    info!(
+        target: "audit",
+        reconcilable = abandoned.reconcilable;
+        "Send abandoned"
+    );
     trace!(
         target: "audit",
-        tx_id = tx_id.to_string().as_str(),
-        reconcilable = abandoned.reconcilable;
+        tx_id = tx_id.to_string().as_str();
         "Send abandoned"
     );
     println!("Send {}: {}", tx_id, abandoned.note());
