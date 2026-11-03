@@ -61,11 +61,10 @@ pub fn lock_all() {
     SESSIONS.write().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
-pub fn is_unlocked(account_name: &str) -> bool {
-    SESSIONS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .contains_key(account_name)
+/// Whether `account_name` in this database has a session the key paths will use.
+pub fn is_unlocked(conn: &Connection, account_name: &str) -> WalletDbResult<bool> {
+    let account = get_account_by_name(conn, account_name)?;
+    Ok(account.is_some_and(|account| session_for(&account).is_some()))
 }
 
 /// The wallet from `account`'s session, or `None` when it has no session for this row.
@@ -162,7 +161,7 @@ mod tests {
 
         let err = unlock(&conn, "session-wrong", "wrong").expect_err("wrong passphrase");
         assert!(matches!(err, WalletDbError::InvalidPassphrase), "got: {err}");
-        assert!(!is_unlocked("session-wrong"));
+        assert!(!is_unlocked(&conn, "session-wrong").unwrap());
     }
 
     #[test]
@@ -177,7 +176,7 @@ mod tests {
         lock("session-lock");
         lock("session-lock");
 
-        assert!(!is_unlocked("session-lock"));
+        assert!(!is_unlocked(&conn, "session-lock").unwrap());
         assert!(matches!(
             sign_message_unlocked(&account, "hello"),
             Err(SigningError::Db(WalletDbError::NotUnlocked(_)))
@@ -198,13 +197,16 @@ mod tests {
 
         let err = change_passphrase(&mut conn, "session-change", "wrong", "new").expect_err("wrong old passphrase");
         assert!(matches!(err, WalletDbError::DecryptionFailed(_)), "got: {err}");
-        assert!(is_unlocked("session-change"), "a failed change keeps the session");
+        assert!(
+            is_unlocked(&conn, "session-change").unwrap(),
+            "a failed change keeps the session"
+        );
 
         let before = derivations();
         change_passphrase(&mut conn, "session-change", "password", "new").unwrap();
         // One derivation checks the old passphrase, one encrypts under the new; none re-unlocks.
         assert_eq!(derivations() - before, 2);
-        assert!(is_unlocked("session-change"));
+        assert!(is_unlocked(&conn, "session-change").unwrap());
         let account = get_account_by_name(&conn, "session-change").unwrap().unwrap();
         sign_message_unlocked(&account, "hello").unwrap();
 
@@ -278,9 +280,11 @@ mod tests {
 
         delete_account(&conn, "session-delete").unwrap();
         update_account_name(&conn, "session-rename", "session-renamed").unwrap();
-        assert!(!is_unlocked("session-delete"));
-        assert!(!is_unlocked("session-rename"));
-        assert!(!is_unlocked("session-renamed"));
+        // The rows are gone or renamed, so check the session map itself.
+        let sessions = SESSIONS.read().unwrap();
+        assert!(!sessions.contains_key("session-delete"));
+        assert!(!sessions.contains_key("session-rename"));
+        assert!(!sessions.contains_key("session-renamed"));
     }
 
     #[test]
@@ -294,6 +298,8 @@ mod tests {
         let other = new_account(&second_conn, "session-shared-name");
 
         unlock(&first_conn, "session-shared-name", "password").unwrap();
+        assert!(is_unlocked(&first_conn, "session-shared-name").unwrap());
+        assert!(!is_unlocked(&second_conn, "session-shared-name").unwrap());
         assert!(matches!(
             other.unlocked_wallet_type(),
             Err(WalletDbError::NotUnlocked(_))
