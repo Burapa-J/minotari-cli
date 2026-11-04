@@ -219,7 +219,8 @@ impl AccountRow {
     pub(crate) fn decrypt_wallet_json(&self, password: &str) -> WalletDbResult<Zeroizing<Vec<u8>>> {
         // Malformed rows fail here, so `DecryptionFailed` below means a wrong password or tampering.
         if self.cipher_nonce.len() != 24 || self.salt.len() < argon2::MIN_SALT_LEN {
-            warn!(account = &*self.friendly_name; "DB: Stored wallet nonce or salt is malformed");
+            warn!("DB: Stored wallet nonce or salt is malformed");
+            trace!(account = &*self.friendly_name; "DB: Stored wallet nonce or salt is malformed");
             return Err(WalletDbError::Decoding(
                 "Stored wallet nonce or salt is malformed".to_string(),
             ));
