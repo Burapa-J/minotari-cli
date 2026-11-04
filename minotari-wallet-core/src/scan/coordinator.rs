@@ -1050,7 +1050,8 @@ impl ScanCoordinator {
         }
 
         // Phase 1 ended on its last batch after the deadline: do not start phase 2.
-        if self.deadline_short_of(&targets, tip_height) {
+        // A phase 1 with nothing to scan does not count, or the scan could never progress.
+        if fast_scanned > 0 && self.deadline_short_of(&targets, tip_height) {
             let more_blocks = self
                 .send_terminal_events(&targets, ScanStop::Deadline, tip_height, fast_scanned)
                 .await;
@@ -2333,6 +2334,40 @@ mod tests {
             )),
             "phase 2 never starts"
         );
+        assert_eq!(terminal_count(&events), 1);
+        assert_eq!(budget_exhausted_tip(&events), Some(1600));
+    }
+
+    #[tokio::test]
+    async fn a_fast_sync_past_its_deadline_with_phase_one_done_still_scans_a_phase_two_batch() {
+        // Phase 1 ends at 1510, below where the wallet already is.
+        let mut setup = setup(1550, 1600).await;
+        setup.coordinator.deadline = Some(Instant::now());
+        let mode = ScanMode::FastSync { safety_buffer: 90 };
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(vec![account(&setup.pool)], "password", mode, 0, None)
+            .await
+            .expect("scan");
+        assert!(more_blocks);
+        let events = drain(&mut setup.events);
+
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ProcessingEvent::ScanStatus(ScanStatusEvent::FastSyncPhaseStarted {
+                phase: FastSyncPhase::RecentFullScan,
+                ..
+            })
+        )));
+        let progress: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProcessingEvent::ScanStatus(ScanStatusEvent::Progress { current_height, .. }) => Some(*current_height),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progress, vec![1560], "exactly one phase 2 batch is scanned");
         assert_eq!(terminal_count(&events), 1);
         assert_eq!(budget_exhausted_tip(&events), Some(1600));
     }
