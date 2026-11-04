@@ -1049,6 +1049,14 @@ impl ScanCoordinator {
                 .await;
         }
 
+        // Phase 1 ended on its last batch after the deadline: do not start phase 2.
+        if self.deadline_short_of(&targets, tip_height) {
+            let more_blocks = self
+                .send_terminal_events(&targets, ScanStop::Deadline, tip_height, fast_scanned)
+                .await;
+            return Ok((all_events, more_blocks));
+        }
+
         // --- Phase 2: Recent full scan (fast_sync_target -> tip) ---
         // Targets already have next_block_to_scan set to fast_sync_target + 1
         // from Phase 1, so no reset needed.
@@ -1322,8 +1330,12 @@ impl ScanCoordinator {
                 }
             }
 
-            if self.deadline_short_of(targets, end_height) {
-                stop = ScanStop::Deadline;
+            // Past the deadline, stop at this batch: out of budget if an account is
+            // still below the end, otherwise done (the rest of the stream is past it).
+            if self.deadline_passed() {
+                if self.deadline_short_of(targets, end_height) {
+                    stop = ScanStop::Deadline;
+                }
                 break;
             }
         }
@@ -1428,8 +1440,12 @@ impl ScanCoordinator {
                 }
             }
 
-            if self.deadline_short_of(targets, tip_height) {
-                stop = ScanStop::Deadline;
+            // Past the deadline, stop at this batch: out of budget if an account is
+            // still below the end, otherwise done (the rest of the stream is past it).
+            if self.deadline_passed() {
+                if self.deadline_short_of(targets, tip_height) {
+                    stop = ScanStop::Deadline;
+                }
                 break;
             }
         }
@@ -1545,8 +1561,12 @@ impl ScanCoordinator {
                 }
             }
 
-            if self.deadline_short_of(targets, end_height) {
-                stop = ScanStop::Deadline;
+            // Past the deadline, stop at this batch: out of budget if an account is
+            // still below the end, otherwise done (the rest of the stream is past it).
+            if self.deadline_passed() {
+                if self.deadline_short_of(targets, end_height) {
+                    stop = ScanStop::Deadline;
+                }
                 break;
             }
         }
@@ -2276,6 +2296,43 @@ mod tests {
             .expect("scan");
         assert!(more_blocks);
         let events = drain(&mut setup.events);
+        assert_eq!(terminal_count(&events), 1);
+        assert_eq!(budget_exhausted_tip(&events), Some(1600));
+    }
+
+    #[tokio::test]
+    async fn a_fast_sync_whose_deadline_passes_at_the_end_of_phase_one_does_not_start_phase_two() {
+        let mut setup = setup(1500, 1600).await;
+        setup.coordinator.deadline = Some(Instant::now());
+        // Phase 1 covers 1501..=1510, one batch; the tip is at 1600.
+        let mode = ScanMode::FastSync { safety_buffer: 90 };
+
+        let (_, more_blocks) = setup
+            .coordinator
+            .run(vec![account(&setup.pool)], "password", mode, 0, None)
+            .await
+            .expect("scan");
+        assert!(more_blocks);
+        let events = drain(&mut setup.events);
+
+        let progress: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProcessingEvent::ScanStatus(ScanStatusEvent::Progress { current_height, .. }) => Some(*current_height),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progress, vec![1510], "exactly one batch is scanned");
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                ProcessingEvent::ScanStatus(ScanStatusEvent::FastSyncPhaseStarted {
+                    phase: FastSyncPhase::RecentFullScan,
+                    ..
+                })
+            )),
+            "phase 2 never starts"
+        );
         assert_eq!(terminal_count(&events), 1);
         assert_eq!(budget_exhausted_tip(&events), Some(1600));
     }
