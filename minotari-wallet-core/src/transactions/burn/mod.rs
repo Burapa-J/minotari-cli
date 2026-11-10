@@ -44,7 +44,7 @@ use crate::{
     models::PendingTransactionStatus,
     transactions::{
         fee_estimator::{estimated_output_size_for_payment_id, measure_output_size},
-        fund_locker::FundLocker,
+        fund_locker::{FundLocker, release_reservation as release_locked_reservation},
         idempotency::{IdempotencyBinding, IdempotencyConflict, IdempotencyOperation, RequestFingerprint},
         input_selector::map_change_required_error,
     },
@@ -163,11 +163,21 @@ pub fn create_burn_tx(
         params.sidechain_deployment_key.as_ref(),
     );
 
-    let memo = params
-        .payment_id
-        .as_deref()
-        .and_then(|s| MemoField::new_open_from_string(s, TxType::Burn).ok())
-        .unwrap_or_else(|| MemoField::new_open_from_string("", TxType::Burn).unwrap_or_default());
+    let memo = match params.payment_id.as_deref() {
+        Some(s) => MemoField::new_open_from_string(s, TxType::Burn)
+            .map_err(|e| anyhow!("Invalid payment_id for burn transaction: {e}"))?,
+        None => MemoField::new_open_from_string("", TxType::Burn).unwrap_or_default(),
+    };
+    MemoField::new_transaction_info(
+        sender_address.clone(),
+        MicroMinotari::zero(),
+        MicroMinotari::zero(),
+        true,
+        TxType::Burn,
+        vec![tari_common_types::types::FixedHash::zero()],
+        memo.payment_id_as_bytes(),
+    )
+    .map_err(|e| anyhow!("Payment id does not fit in the burn change memo: {e}"))?;
 
     // The burn output is built by hand rather than from a recipient spec, so the script is ours to
     // choose; it is needed both to measure the output for the reservation and to build it.
@@ -202,149 +212,161 @@ pub fn create_burn_tx(
     // and hand the inputs back, rather than fail on an opaque key manager error with the funds
     // locked until the reservation expires.
     if !locked_funds.requires_change_output {
-        release_reservation(conn, account.id, params.idempotency_key.as_deref())?;
+        if locked_funds.created_reservation {
+            release_locked_reservation(conn, &locked_funds.reservation_id);
+        } else {
+            release_reservation(conn, account.id, params.idempotency_key.as_deref())?;
+        }
         return Err(anyhow!(
             "Burning {} leaves no change output, and an L2 burn needs one; adjust the amount",
             params.amount
         ));
     }
 
-    let key_manager = account.get_key_manager(password)?;
+    let build_result = (|| -> Result<BurnTxResult, anyhow::Error> {
+        let key_manager = account.get_key_manager(password)?;
 
-    // Assemble the transaction.
-    let mut tx_builder = TransactionBuilder::new(consensus_constants, key_manager.clone(), network)?;
-    tx_builder.with_fee_per_gram(params.fee_per_gram);
-    // Every send carries a change output, so the wallet's scan can see it land.
-    tx_builder.with_change_required();
-    tx_builder.with_kernel_features(KernelFeatures::create_burn());
-    tx_builder.with_tx_type(TxType::Burn);
-    tx_builder.with_memo(memo.clone());
+        // Assemble the transaction.
+        let mut tx_builder = TransactionBuilder::new(consensus_constants, key_manager.clone(), network)?;
+        tx_builder.with_fee_per_gram(params.fee_per_gram);
+        // Every send carries a change output, so the wallet's scan can see it land.
+        tx_builder.with_change_required();
+        tx_builder.with_kernel_features(KernelFeatures::create_burn());
+        tx_builder.with_tx_type(TxType::Burn);
+        tx_builder.with_memo(memo.clone());
 
-    for utxo in &locked_funds.utxos {
-        tx_builder.with_input(utxo.clone())?;
+        for utxo in &locked_funds.utxos {
+            tx_builder.with_input(utxo.clone())?;
+        }
+
+        // The burn output's sender offset key `r` is derived from its commitment mask rather than
+        // taken from the builder's reservation, so the proof can be rebuilt from the seed alone if
+        // the `burn_proofs` row is lost before the claim is made. The stealth claim key C and the
+        // ownership proof both hang off `r`, so they come next.
+        let (commitment_mask_key, _script_key) = key_manager.get_next_commitment_mask_and_script_key()?;
+        let sender_offset_key = key_manager.derive_burn_sender_offset_key(&commitment_mask_key.key_id)?;
+        let (stealth_claim_public_key, ownership_proof) = burn_claim_material(
+            &key_manager,
+            &sender_offset_key.key_id,
+            &commitment_mask_key.key_id,
+            params.amount.as_u64(),
+            claim_public_key,
+            sidechain_id.as_ref(),
+        )?;
+        let output_features = OutputFeatures::create_burn_confidential_output(
+            stealth_claim_public_key,
+            params.sidechain_deployment_key.as_ref(),
+        );
+
+        // A key the builder did not mint is a key it cannot subtract from the script offset, so its
+        // contribution is registered by hand. Ristretto scalar arithmetic: this cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let negated_r = PrivateKey::default() - key_manager.get_private_key(&sender_offset_key.key_id)?;
+        tx_builder.with_host_derived_partial_script_offset(negated_r);
+
+        // The encrypted data in the burn output is DH-encrypted to P with `r`, so the L2 wallet can
+        // decrypt it with R and its account secret.
+        let recovery_key_id = TariKeyId::DHEncryptedData {
+            public_key: claim_public_key.clone(),
+            private_key: sender_offset_key.key_id.clone().into(),
+        };
+
+        // Build the burn output with explicit key material (not stealth-address derivation).
+        let burn_output = WalletOutputBuilder::new(params.amount, commitment_mask_key.key_id.clone())
+            .with_features(output_features)
+            .with_script(burn_script)
+            .with_input_data(Default::default())
+            .with_sender_offset_public_key(sender_offset_key.pub_key.clone())
+            .with_script_key(TariKeyId::Zero)
+            .with_minimum_value_promise(MicroMinotari::zero())
+            .encrypt_data_for_recovery(&key_manager, Some(&recovery_key_id), memo.clone())?
+            .sign_metadata_signature(&key_manager, &sender_offset_key.key_id)?
+            .try_build(&key_manager)?;
+
+        let output_hash = burn_output.output_hash();
+        let commitment = burn_output.commitment().clone();
+
+        // The reservation is where the fee and the change decision are made, so the burn output is
+        // declared to it by value and weight, but as one that brings its own sender offset key. The
+        // only key the reservation mints is then the change output's, and it refuses to blind the
+        // input script keys with no key at all: an L2 burn that consumes its inputs exactly, leaving
+        // no change, cannot be built.
+        let pending_burn_output = PendingOutput::custom_sender_offset(
+            params.amount,
+            recipient_output_features_and_scripts_size(
+                &weight_params,
+                burn_output.features(),
+                burn_output.script(),
+                burn_output.covenant(),
+                &memo,
+            )?,
+        );
+        tx_builder
+            .reserve_sender_offset_keys(&[pending_burn_output])
+            .map_err(map_change_required_error)?;
+
+        // Default address used as placeholder — burn outputs have no real "recipient".
+        tx_builder.add_recipient(
+            TariAddress::new_dual_address(
+                key_manager.get_view_key().pub_key,
+                sender_address.public_spend_key().clone(),
+                network,
+                TariAddressFeatures::create_one_sided_only(),
+                None,
+            )?,
+            burn_output,
+            sender_offset_key.key_id,
+            Some(recovery_key_id),
+        )?;
+
+        let finalized = tx_builder.build()?;
+
+        let kernel = finalized
+            .transaction
+            .body
+            .kernels()
+            .iter()
+            .find(|k| k.features.is_burned())
+            .ok_or_else(|| anyhow!("No burn kernel found in transaction"))?;
+
+        // The proof records the recipient's P (the L2 wallet finds its account by it) alongside the
+        // ownership proof, which is over C.
+        let new_burn_proof = NewBurnProof {
+            account_id: params.account_id,
+            output_hash,
+            commitment: commitment.as_bytes().to_vec(),
+            claim_public_key: claim_public_key.to_hex(),
+            ownership_proof_nonce: ownership_proof.get_compressed_public_nonce().as_bytes().to_vec(),
+            ownership_proof_sig: ownership_proof.get_signature().as_bytes().to_vec(),
+            kernel_excess: kernel.excess.as_bytes().to_vec(),
+            kernel_excess_nonce: kernel.excess_sig.get_compressed_public_nonce().as_bytes().to_vec(),
+            kernel_excess_sig: kernel.excess_sig.get_signature().as_bytes().to_vec(),
+            sender_offset_public_key: sender_offset_key.pub_key.as_bytes().to_vec(),
+            encrypted_data: finalized
+                .sent_outputs
+                .first()
+                .map(|op| op.output.encrypted_data().to_byte_vec())
+                .unwrap_or_default(),
+            value: params.amount.as_u64(),
+            kernel_fee: kernel.fee.as_u64(),
+            kernel_lock_height: kernel.lock_height,
+        };
+
+        Ok(BurnTxResult {
+            transaction: finalized.transaction,
+            output_hash,
+            new_burn_proof,
+            tx_id: finalized.tx_id,
+            change_output: finalized.change,
+            view_key: key_manager.get_private_view_key(),
+        })
+    })();
+
+    if build_result.is_err() && locked_funds.created_reservation {
+        release_locked_reservation(conn, &locked_funds.reservation_id);
     }
 
-    // The burn output's sender offset key `r` is derived from its commitment mask rather than
-    // taken from the builder's reservation, so the proof can be rebuilt from the seed alone if
-    // the `burn_proofs` row is lost before the claim is made. The stealth claim key C and the
-    // ownership proof both hang off `r`, so they come next.
-    let (commitment_mask_key, _script_key) = key_manager.get_next_commitment_mask_and_script_key()?;
-    let sender_offset_key = key_manager.derive_burn_sender_offset_key(&commitment_mask_key.key_id)?;
-    let (stealth_claim_public_key, ownership_proof) = burn_claim_material(
-        &key_manager,
-        &sender_offset_key.key_id,
-        &commitment_mask_key.key_id,
-        params.amount.as_u64(),
-        claim_public_key,
-        sidechain_id.as_ref(),
-    )?;
-    let output_features = OutputFeatures::create_burn_confidential_output(
-        stealth_claim_public_key,
-        params.sidechain_deployment_key.as_ref(),
-    );
-
-    // A key the builder did not mint is a key it cannot subtract from the script offset, so its
-    // contribution is registered by hand. Ristretto scalar arithmetic: this cannot overflow.
-    #[allow(clippy::arithmetic_side_effects)]
-    let negated_r = PrivateKey::default() - key_manager.get_private_key(&sender_offset_key.key_id)?;
-    tx_builder.with_host_derived_partial_script_offset(negated_r);
-
-    // The encrypted data in the burn output is DH-encrypted to P with `r`, so the L2 wallet can
-    // decrypt it with R and its account secret.
-    let recovery_key_id = TariKeyId::DHEncryptedData {
-        public_key: claim_public_key.clone(),
-        private_key: sender_offset_key.key_id.clone().into(),
-    };
-
-    // Build the burn output with explicit key material (not stealth-address derivation).
-    let burn_output = WalletOutputBuilder::new(params.amount, commitment_mask_key.key_id.clone())
-        .with_features(output_features)
-        .with_script(burn_script)
-        .with_input_data(Default::default())
-        .with_sender_offset_public_key(sender_offset_key.pub_key.clone())
-        .with_script_key(TariKeyId::Zero)
-        .with_minimum_value_promise(MicroMinotari::zero())
-        .encrypt_data_for_recovery(&key_manager, Some(&recovery_key_id), memo.clone())?
-        .sign_metadata_signature(&key_manager, &sender_offset_key.key_id)?
-        .try_build(&key_manager)?;
-
-    let output_hash = burn_output.output_hash();
-    let commitment = burn_output.commitment().clone();
-
-    // The reservation is where the fee and the change decision are made, so the burn output is
-    // declared to it by value and weight, but as one that brings its own sender offset key. The
-    // only key the reservation mints is then the change output's, and it refuses to blind the
-    // input script keys with no key at all: an L2 burn that consumes its inputs exactly, leaving
-    // no change, cannot be built.
-    let pending_burn_output = PendingOutput::custom_sender_offset(
-        params.amount,
-        recipient_output_features_and_scripts_size(
-            &weight_params,
-            burn_output.features(),
-            burn_output.script(),
-            burn_output.covenant(),
-            &memo,
-        )?,
-    );
-    tx_builder
-        .reserve_sender_offset_keys(&[pending_burn_output])
-        .map_err(map_change_required_error)?;
-
-    // Default address used as placeholder — burn outputs have no real "recipient".
-    tx_builder.add_recipient(
-        TariAddress::new_dual_address(
-            key_manager.get_view_key().pub_key,
-            sender_address.public_spend_key().clone(),
-            network,
-            TariAddressFeatures::create_one_sided_only(),
-            None,
-        )?,
-        burn_output,
-        sender_offset_key.key_id,
-        Some(recovery_key_id),
-    )?;
-
-    let finalized = tx_builder.build()?;
-
-    let kernel = finalized
-        .transaction
-        .body
-        .kernels()
-        .iter()
-        .find(|k| k.features.is_burned())
-        .ok_or_else(|| anyhow!("No burn kernel found in transaction"))?;
-
-    // The proof records the recipient's P (the L2 wallet finds its account by it) alongside the
-    // ownership proof, which is over C.
-    let new_burn_proof = NewBurnProof {
-        account_id: params.account_id,
-        output_hash,
-        commitment: commitment.as_bytes().to_vec(),
-        claim_public_key: claim_public_key.to_hex(),
-        ownership_proof_nonce: ownership_proof.get_compressed_public_nonce().as_bytes().to_vec(),
-        ownership_proof_sig: ownership_proof.get_signature().as_bytes().to_vec(),
-        kernel_excess: kernel.excess.as_bytes().to_vec(),
-        kernel_excess_nonce: kernel.excess_sig.get_compressed_public_nonce().as_bytes().to_vec(),
-        kernel_excess_sig: kernel.excess_sig.get_signature().as_bytes().to_vec(),
-        sender_offset_public_key: sender_offset_key.pub_key.as_bytes().to_vec(),
-        encrypted_data: finalized
-            .sent_outputs
-            .first()
-            .map(|op| op.output.encrypted_data().to_byte_vec())
-            .unwrap_or_default(),
-        value: params.amount.as_u64(),
-        kernel_fee: kernel.fee.as_u64(),
-        kernel_lock_height: kernel.lock_height,
-    };
-
-    Ok(BurnTxResult {
-        transaction: finalized.transaction,
-        output_hash,
-        new_burn_proof,
-        tx_id: finalized.tx_id,
-        change_output: finalized.change,
-        view_key: key_manager.get_private_view_key(),
-    })
+    build_result
 }
 
 /// The claim material for a burn to the L2 account key `P`: the on-wire claim key
@@ -786,5 +808,71 @@ pub(crate) mod tests {
             !signature.verify(&mask_public_key, message_over(&recipient)),
             "a proof over the raw recipient key is exactly what L2 rejects"
         );
+    }
+
+    #[test]
+    fn create_burn_tx_refuses_oversized_payment_id_and_releases_reservation_without_idempotency_key() {
+        let (pool, account, _temp) = setup_funded_account(1_000_000);
+        let mut conn = pool.get().expect("conn");
+        let claim_public_key = KeyManager::new_random()
+            .expect("l2 wallet")
+            .get_random_key(None, None)
+            .expect("account key")
+            .pub_key;
+
+        let err = create_burn_tx(
+            &account,
+            &mut conn,
+            Network::LocalNet,
+            "pass",
+            BurnTxParams {
+                account_id: account.id,
+                amount: MicroMinotari(10_000),
+                claim_public_key: Some(claim_public_key.clone()),
+                sidechain_deployment_key: None,
+                fee_per_gram: MicroMinotari(5),
+                payment_id: Some("x".repeat(200)),
+                idempotency_key: None,
+                seconds_to_lock: 3600,
+                confirmation_window: 100,
+            },
+        )
+        .err()
+        .expect("oversized burn payment_id must be rejected instead of silently dropped");
+        assert!(
+            err.to_string().contains("Payment id") || err.to_string().contains("payment_id"),
+            "unexpected error: {err}"
+        );
+
+        // Also verify that if a burn fails after locking with idempotency_key: None (e.g. bad password
+        // on key_manager), the reservation is unlocked immediately by reservation_id.
+        let _ = create_burn_tx(
+            &account,
+            &mut conn,
+            Network::LocalNet,
+            "wrong-password-for-key-manager",
+            BurnTxParams {
+                account_id: account.id,
+                amount: MicroMinotari(10_000),
+                claim_public_key: Some(claim_public_key),
+                sidechain_deployment_key: None,
+                fee_per_gram: MicroMinotari(5),
+                payment_id: None,
+                idempotency_key: None,
+                seconds_to_lock: 3600,
+                confirmation_window: 100,
+            },
+        )
+        .err()
+        .expect("wrong password must fail");
+
+        let locked_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outputs WHERE account_id = :id AND status = 'LOCKED'",
+                named_params! { ":id": account.id },
+                |r| r.get(0),
+            )
+            .expect("query locked outputs");
+        assert_eq!(locked_count, 0, "failed burn must unlock reserved UTXOs");
     }
 }
