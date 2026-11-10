@@ -237,7 +237,7 @@ impl WalletHttpClient {
         debug!("HTTP: Requesting tip info from base node");
         let response = self
             .http_client
-            .send_request(Method::GET, "/get_tip_info", None)
+            .send_request_capped(Method::GET, "/get_tip_info", None, 64 * 1024)
             .await?;
         Ok(response)
     }
@@ -472,7 +472,10 @@ impl WalletHttpClient {
             excess_sig_nonce_hex, excess_sig_hex
         );
 
-        let response = self.http_client.send_request(Method::GET, &path, None).await?;
+        let response = self
+            .http_client
+            .send_request_capped(Method::GET, &path, None, 64 * 1024)
+            .await?;
 
         debug!("HTTP: Transaction query successful");
         Ok(response)
@@ -485,7 +488,10 @@ impl WalletHttpClient {
         );
         let path = format!("/get_height_at_time?time={}", epoch_time);
 
-        let response = self.http_client.send_request::<u64>(Method::GET, &path, None).await?;
+        let response = self
+            .http_client
+            .send_request_capped::<u64>(Method::GET, &path, None, 16 * 1024)
+            .await?;
 
         debug!("HTTP: Requesting block height successful");
         Ok(response)
@@ -515,7 +521,7 @@ impl WalletHttpClient {
 
         let response = self
             .http_client
-            .send_request::<GetMempoolFeePerGramStatsResponse>(Method::GET, &path, None)
+            .send_request_capped::<GetMempoolFeePerGramStatsResponse>(Method::GET, &path, None, 256 * 1024)
             .await?;
 
         let stats: Vec<FeePerGramStat> = response
@@ -644,5 +650,57 @@ mod tests {
             .to_string();
         assert!(!error.chars().any(char::is_control), "got: {error:?}");
         assert!(error.chars().count() < 300, "the node's text is truncated");
+    }
+
+    #[tokio::test]
+    async fn tip_info_and_height_at_time_reject_oversized_node_responses() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/get_tip_info"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(64 * 1024 + 1)))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/get_height_at_time"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("1".repeat(16 * 1024 + 1)))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(64 * 1024 + 1)))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/get_mempool_fee_per_gram_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(256 * 1024 + 1)))
+            .mount(&server)
+            .await;
+
+        let client = WalletHttpClient::new(server.uri().parse().expect("url")).expect("client");
+        let tip_err = client
+            .get_tip_info()
+            .await
+            .err()
+            .expect("oversized tip info must be rejected");
+        assert!(tip_err.to_string().contains("byte limit"), "{tip_err}");
+
+        let height_err = client
+            .get_height_at_time(1_700_000_000)
+            .await
+            .expect_err("oversized height response must be rejected");
+        assert!(height_err.to_string().contains("byte limit"), "{height_err}");
+
+        let tx_query_err = client
+            .transaction_query(&[0u8; 32], &[0u8; 64])
+            .await
+            .err()
+            .expect("oversized transaction_query response must be rejected");
+        assert!(tx_query_err.to_string().contains("byte limit"), "{tx_query_err}");
+
+        let fee_stats_err = client
+            .get_mempool_fee_per_gram_stats(10)
+            .await
+            .expect_err("oversized mempool fee stats response must be rejected");
+        assert!(fee_stats_err.to_string().contains("byte limit"), "{fee_stats_err}");
     }
 }

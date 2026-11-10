@@ -24,6 +24,12 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// The client uses exponential backoff between retries.
 const DEFAULT_MAX_RETRIES: u32 = 3;
 
+/// Default maximum response body size (16 MiB) when no endpoint-specific cap is provided.
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum number of bytes read from a non-2xx error body before sanitization/truncation.
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+
 /// Low-level HTTP client for Tari base node communication.
 ///
 /// This struct wraps a `reqwest` client with middleware for automatic retries
@@ -204,24 +210,19 @@ impl HttpClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = if let Some(limit) = max_bytes {
-                String::from_utf8_lossy(&read_response_capped(resp, limit).await?).into_owned()
-            } else {
-                resp.text()
-                    .await
-                    .unwrap_or_else(|_| "Failed to read response body".into())
+            let error_limit = max_bytes.map_or(MAX_ERROR_BODY_BYTES, |limit| limit.min(MAX_ERROR_BODY_BYTES));
+            let body = match read_response_prefix(resp, error_limit).await {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(_) => "Failed to read response body".into(),
             };
             // The body is the node's text; it ends up in logs and on the terminal.
             let body = crate::log::sanitize_node_text(&body);
             return Err(HttpError::ServerError { status, body });
         }
 
-        if let Some(limit) = max_bytes {
-            let bytes = read_response_capped(resp, limit).await?;
-            Ok(serde_json::from_slice(&bytes)?)
-        } else {
-            Ok(resp.json().await?)
-        }
+        let limit = max_bytes.unwrap_or(DEFAULT_MAX_RESPONSE_BYTES);
+        let bytes = read_response_capped(resp, limit).await?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     /// Updates the stored latency measurement.
@@ -256,6 +257,22 @@ async fn read_response_capped(mut response: reqwest::Response, limit: usize) -> 
             return Err(HttpError::ResponseTooLarge { limit });
         }
         bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn read_response_prefix(mut response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = chunk.len().min(remaining);
+        bytes.extend_from_slice(&chunk[..take]);
+        if bytes.len() >= max_bytes {
+            break;
+        }
     }
     Ok(bytes)
 }
@@ -317,5 +334,25 @@ mod tests {
         let shown = error.to_string();
         assert!(!shown.chars().any(char::is_control), "got: {shown:?}");
         assert!(shown.chars().count() <= 300, "got {} characters", shown.chars().count());
+    }
+
+    #[tokio::test]
+    async fn oversized_error_body_still_returns_server_error_with_bounded_read() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/huge-error"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("E".repeat(64 * 1024)))
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .send_request::<serde_json::Value>(Method::GET, "/huge-error", None)
+            .await
+            .expect_err("502 must fail");
+        let HttpError::ServerError { status, body } = error else {
+            panic!("expected ServerError, got {error}");
+        };
+        assert_eq!(status, reqwest::StatusCode::BAD_GATEWAY);
+        assert!(!body.is_empty() && body.chars().count() <= 300);
     }
 }

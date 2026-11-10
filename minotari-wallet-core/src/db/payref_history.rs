@@ -16,6 +16,10 @@ pub fn save_payref_history(
     old_payref: &str,
     output_hash: Option<&str>,
 ) -> WalletDbResult<()> {
+    if old_payref.is_empty() {
+        return Ok(());
+    }
+
     trace!(
         account_id = account_id,
         transaction_id = transaction_id.to_string().as_str(),
@@ -46,6 +50,10 @@ pub fn get_transaction_id_by_historical_payref(
     account_id: i64,
     payref: &str,
 ) -> WalletDbResult<Option<TxId>> {
+    if payref.is_empty() {
+        return Ok(None);
+    }
+
     trace!(
         account_id = account_id,
         payref = payref;
@@ -188,6 +196,9 @@ pub fn save_completed_transaction_payrefs_before_reorg(
     let mut count = 0u64;
     for row in rows {
         let (tx_id_i64, payref, output_hash) = row?;
+        if payref.is_empty() {
+            continue;
+        }
         #[allow(clippy::cast_sign_loss)]
         let tx_id = TxId::from(tx_id_i64 as u64);
         save_payref_history(conn, account_id, tx_id, &payref, output_hash.as_deref())?;
@@ -324,5 +335,35 @@ mod tests {
             .expect("history lookup")
             .expect("row exists");
         assert_eq!(winner, second, "most-recent row should win the ORDER BY");
+
+        // Empty payrefs are ignored on save and rejected on lookup.
+        save_payref_history(&conn, account.id, first, "", None).expect("empty save is no-op");
+        assert!(
+            get_transaction_id_by_historical_payref(&conn, account.id, "")
+                .expect("empty lookup")
+                .is_none()
+        );
+
+        // `save_completed_transaction_payrefs_before_reorg` skips empty `sent_payref` strings
+        // (`continue`) and only records non-empty payrefs.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").expect("pragma");
+        conn.execute(
+            "INSERT INTO completed_transactions \
+             (id, account_id, pending_tx_id, status, kernel_excess, sent_payref, mined_height, serialized_transaction) \
+             VALUES (?1, ?2, 'pending-empty', 'mined_confirmed', X'00', '', 600, X'00'), \
+                    (?3, ?2, 'pending-valid', 'mined_confirmed', X'01', 'valid_completed_payref', 600, X'00')",
+            rusqlite::params![10i64, account.id, 11i64],
+        )
+        .expect("insert completed txs");
+
+        let saved_count =
+            save_completed_transaction_payrefs_before_reorg(&conn, account.id, 500).expect("save before reorg");
+        assert_eq!(saved_count, 1, "only the non-empty sent_payref must be saved");
+        assert_eq!(
+            get_transaction_id_by_historical_payref(&conn, account.id, "valid_completed_payref")
+                .expect("lookup")
+                .expect("found"),
+            TxId::from(11u64)
+        );
     }
 }

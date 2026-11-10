@@ -647,7 +647,14 @@ pub fn get_displayed_transactions_by_payref(
     // the wildcards so the pattern only ever matches the literal payref, and bound
     // the result set so one request cannot ask the wallet to serialize an unbounded
     // number of transactions.
-    let search_pattern = format!("%{}%", escape_like_pattern(payref));
+    if payref.is_empty() || payref.contains('"') {
+        return Ok(Vec::new());
+    }
+
+    // Wrap the escaped literal in JSON string quotes (`"..."`) so substring
+    // queries (`""`, `"["`, `"]"`, or short prefixes) cannot match arbitrary
+    // elements of the serialized JSON array.
+    let search_pattern = format!("%\"{}\"%", escape_like_pattern(payref));
 
     let mut stmt = conn.prepare_cached(
         r#"
@@ -747,5 +754,15 @@ mod tests {
         let found = get_displayed_transactions_by_payref(&conn, account_id, &target).expect("query");
         assert_eq!(found.len(), 1, "the literal payref must still match its transaction");
         assert_eq!(found.first().expect("one match").id, TxId::from(1_u64));
+
+        // Substrings, JSON punctuation, and empty queries must not match.
+        for non_exact in ["", "[", "]", "\"", "aa", &"aa".repeat(31)] {
+            let matches = get_displayed_transactions_by_payref(&conn, account_id, non_exact).expect("query");
+            assert!(
+                matches.is_empty(),
+                "non-exact payref query {non_exact:?} must match nothing, got {}",
+                matches.len()
+            );
+        }
     }
 }
